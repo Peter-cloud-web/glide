@@ -1,7 +1,9 @@
 package com.bumptech.glide.load.engine;
 
+import android.support.annotation.NonNull;
 import android.support.v4.util.Pools;
-
+import com.bumptech.glide.util.Preconditions;
+import com.bumptech.glide.util.Synthetic;
 import com.bumptech.glide.util.pool.FactoryPools;
 import com.bumptech.glide.util.pool.StateVerifier;
 
@@ -27,13 +29,16 @@ final class LockedResource<Z> implements Resource<Z>,
   private boolean isRecycled;
 
   @SuppressWarnings("unchecked")
+  @NonNull
   static <Z> LockedResource<Z> obtain(Resource<Z> resource) {
-    LockedResource<Z> result = (LockedResource<Z>) POOL.acquire();
+    LockedResource<Z> result = Preconditions.checkNotNull((LockedResource<Z>) POOL.acquire());
     result.init(resource);
     return result;
   }
 
-  private LockedResource() { }
+  @SuppressWarnings("WeakerAccess")
+  @Synthetic
+  LockedResource() { }
 
   private void init(Resource<Z> toWrap) {
     isRecycled = false;
@@ -46,7 +51,7 @@ final class LockedResource<Z> implements Resource<Z>,
     POOL.release(this);
   }
 
-  public synchronized void unlock() {
+  synchronized void unlock() {
     stateVerifier.throwIfRecycled();
 
     if (!isLocked) {
@@ -58,11 +63,13 @@ final class LockedResource<Z> implements Resource<Z>,
     }
   }
 
+  @NonNull
   @Override
   public Class<Z> getResourceClass() {
     return toWrap.getResourceClass();
   }
 
+  @NonNull
   @Override
   public Z get() {
     return toWrap.get();
@@ -84,6 +91,7 @@ final class LockedResource<Z> implements Resource<Z>,
     }
   }
 
+  @NonNull
   @Override
   public StateVerifier getVerifier() {
     return stateVerifier;

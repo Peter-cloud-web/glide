@@ -1,7 +1,8 @@
 package com.bumptech.glide.load.model;
 
+import android.support.annotation.NonNull;
+import android.support.annotation.VisibleForTesting;
 import android.text.TextUtils;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -42,20 +43,30 @@ public final class LazyHeaders implements Headers {
     Map<String, String> combinedHeaders = new HashMap<>();
 
     for (Map.Entry<String, List<LazyHeaderFactory>> entry : headers.entrySet()) {
-      StringBuilder sb = new StringBuilder();
-      List<LazyHeaderFactory> factories = entry.getValue();
-      int size = factories.size();
-      for (int i = 0; i < size; i++) {
-        LazyHeaderFactory factory = factories.get(i);
-        sb.append(factory.buildHeader());
+      String values = buildHeaderValue(entry.getValue());
+      if (!TextUtils.isEmpty(values)) {
+        combinedHeaders.put(entry.getKey(), values);
+      }
+    }
+
+    return combinedHeaders;
+  }
+
+  @NonNull
+  private String buildHeaderValue(@NonNull List<LazyHeaderFactory> factories) {
+    StringBuilder sb = new StringBuilder();
+    int size = factories.size();
+    for (int i = 0; i < size; i++) {
+      LazyHeaderFactory factory = factories.get(i);
+      String header = factory.buildHeader();
+      if (!TextUtils.isEmpty(header)) {
+        sb.append(header);
         if (i != factories.size() - 1) {
           sb.append(',');
         }
       }
-      combinedHeaders.put(entry.getKey(), sb.toString());
     }
-
-    return combinedHeaders;
+    return sb.toString();
   }
 
   @Override
@@ -90,13 +101,9 @@ public final class LazyHeaders implements Headers {
    * {@link #addHeader(String, String)}, even though {@link #addHeader(String, LazyHeaderFactory)}
    * would usually append an additional value. </p>
    */
-   // PMD doesn't like the necessary static block to initialize DEFAULT_HEADERS.
-  @SuppressWarnings("PMD.FieldDeclarationsShouldBeAtStartOfClass")
   public static final class Builder {
     private static final String USER_AGENT_HEADER = "User-Agent";
-    private static final String DEFAULT_USER_AGENT = System.getProperty("http.agent");
-    private static final String ENCODING_HEADER = "Accept-Encoding";
-    private static final String DEFAULT_ENCODING = "identity";
+    private static final String DEFAULT_USER_AGENT = getSanitizedUserAgent();
     private static final Map<String, List<LazyHeaderFactory>> DEFAULT_HEADERS;
 
     // Set Accept-Encoding header to do our best to avoid gzip since it's both inefficient for
@@ -110,25 +117,20 @@ public final class LazyHeaders implements Headers {
             Collections.<LazyHeaderFactory>singletonList(
                 new StringHeaderFactory(DEFAULT_USER_AGENT)));
       }
-      temp.put(ENCODING_HEADER,
-          Collections.<LazyHeaderFactory>singletonList(
-              new StringHeaderFactory(DEFAULT_ENCODING)));
       DEFAULT_HEADERS = Collections.unmodifiableMap(temp);
     }
 
     private boolean copyOnModify = true;
-    private boolean isEncodingDefault = true;
     private Map<String, List<LazyHeaderFactory>> headers = DEFAULT_HEADERS;
-    private boolean isUserAgentDefault = headers.containsKey(DEFAULT_USER_AGENT);
+    private boolean isUserAgentDefault = true;
 
     /**
      * Adds a value for the given header and returns this builder.
      *
      * <p> Use {@link #addHeader(String, LazyHeaderFactory)} if obtaining the value requires I/O
-     * (ie an oauth token). </p>
+     * (i.e. an OAuth token). </p>
      *
      * @see #addHeader(String, LazyHeaderFactory)
-
      */
     public Builder addHeader(String key, String value) {
       return addHeader(key, new StringHeaderFactory(value));
@@ -145,8 +147,7 @@ public final class LazyHeaders implements Headers {
      * times </p>
      */
     public Builder addHeader(String key, LazyHeaderFactory factory) {
-      if ((isEncodingDefault && ENCODING_HEADER.equalsIgnoreCase(key))
-          || (isUserAgentDefault && USER_AGENT_HEADER.equalsIgnoreCase(key))) {
+      if (isUserAgentDefault && USER_AGENT_HEADER.equalsIgnoreCase(key)) {
         return setHeader(key, factory);
       }
 
@@ -162,8 +163,9 @@ public final class LazyHeaders implements Headers {
      * <p> If the given value is {@code null}, the header at the given key will be removed. </p>
      *
      * <p> Use {@link #setHeader(String, LazyHeaderFactory)} if obtaining the value requires I/O
-     * (ie an oauth token). </p>
+     * (i.e. an OAuth token). </p>
      */
+    @SuppressWarnings({"UnusedReturnValue", "WeakerAccess"}) // Public API
     public Builder setHeader(String key, String value) {
       return setHeader(key, value == null ? null : new StringHeaderFactory(value));
     }
@@ -184,9 +186,6 @@ public final class LazyHeaders implements Headers {
         factories.add(factory);
       }
 
-      if (isEncodingDefault && ENCODING_HEADER.equalsIgnoreCase(key)) {
-        isEncodingDefault = false;
-      }
       if (isUserAgentDefault && USER_AGENT_HEADER.equalsIgnoreCase(key)) {
         isUserAgentDefault = false;
       }
@@ -219,12 +218,38 @@ public final class LazyHeaders implements Headers {
     }
 
     private Map<String, List<LazyHeaderFactory>> copyHeaders() {
-      Map<String, List<LazyHeaderFactory>> result =
-          new HashMap<>(headers.size());
+      Map<String, List<LazyHeaderFactory>> result = new HashMap<>(headers.size());
       for (Map.Entry<String, List<LazyHeaderFactory>> entry : headers.entrySet()) {
-        result.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        @SuppressWarnings("PMD.AvoidInstantiatingObjectsInLoops")
+        List<LazyHeaderFactory> valueCopy = new ArrayList<>(entry.getValue());
+        result.put(entry.getKey(), valueCopy);
       }
       return result;
+    }
+
+    /**
+     * Ensures that the default header will pass OkHttp3's checks for header values.
+     *
+     * @see <a href="https://github.com/bumptech/glide/issues/2331">#2331</a>
+     */
+    @VisibleForTesting
+    static String getSanitizedUserAgent() {
+      String defaultUserAgent = System.getProperty("http.agent");
+      if (TextUtils.isEmpty(defaultUserAgent)) {
+        return defaultUserAgent;
+      }
+
+      int length = defaultUserAgent.length();
+      StringBuilder sb = new StringBuilder(defaultUserAgent.length());
+      for (int i = 0; i < length; i++) {
+        char c = defaultUserAgent.charAt(i);
+        if ((c > '\u001f' || c == '\t') && c < '\u007f') {
+          sb.append(c);
+        } else {
+          sb.append('?');
+        }
+      }
+      return sb.toString();
     }
   }
 

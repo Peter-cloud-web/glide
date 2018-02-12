@@ -3,13 +3,14 @@ package com.bumptech.glide.load.resource.bitmap;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.support.annotation.NonNull;
-
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.Transformation;
 import com.bumptech.glide.load.engine.Resource;
 import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.util.Util;
+import java.nio.charset.Charset;
+import java.security.MessageDigest;
 
 /**
  * A simple {@link com.bumptech.glide.load.Transformation} for transforming
@@ -19,7 +20,7 @@ import com.bumptech.glide.util.Util;
  * Use cases will look something like this:
  * <pre>
  * <code>
- * public class FillSpace extends BaseBitmapTransformation {
+ * public class FillSpace extends BitmapTransformation {
  *     private static final String ID = "com.bumptech.glide.transformations.FillSpace";
  *     private static final String ID_BYTES = ID.getBytes(STRING_CHARSET_NAME);
  *
@@ -50,26 +51,46 @@ import com.bumptech.glide.util.Util;
  * }
  * </code>
  * </pre>
+ *
+ * <p>Using the fully qualified class name as a static final {@link String} (not
+ * {@link Class#getName()} to avoid proguard obfuscation) is an easy way to implement
+ * {@link #updateDiskCacheKey(java.security.MessageDigest)}} correctly. If additional arguments are
+ * required they can be passed in to the constructor of the {@code Transformation} and then used to
+ * update the {@link java.security.MessageDigest} passed in to
+ * {@link #updateDiskCacheKey(MessageDigest)}. If arguments are primitive types, they can typically
+ * easily be serialized using {@link java.nio.ByteBuffer}. {@link String} types can be serialized
+ * with {@link String#getBytes(Charset)} using the constant {@link #CHARSET}.
+ *
+ * <p>As with all {@link Transformation}s, all subclasses <em>must</em> implement
+ * {@link #equals(Object)} and {@link #hashCode()} for memory caching to work correctly.
  */
 public abstract class BitmapTransformation implements Transformation<Bitmap> {
 
-  private final BitmapPool bitmapPool;
-
-  public BitmapTransformation(Context context) {
-    this(Glide.get(context).getBitmapPool());
+  // Public API.
+  @SuppressWarnings("WeakerAccess")
+  public BitmapTransformation() {
+    // Intentionally empty.
   }
 
-  public BitmapTransformation(BitmapPool bitmapPool) {
-    this.bitmapPool = bitmapPool;
+  /**
+   * @deprecated Use {@link #BitmapTransformation()}.
+   * @param context Ignored.
+   */
+  @Deprecated
+  public BitmapTransformation(@SuppressWarnings("unused") Context context) {
+    this();
   }
 
+  @NonNull
   @Override
-  public final Resource<Bitmap> transform(Resource<Bitmap> resource, int outWidth, int outHeight) {
+  public final Resource<Bitmap> transform(
+      @NonNull Context context, @NonNull Resource<Bitmap> resource, int outWidth, int outHeight) {
     if (!Util.isValidDimensions(outWidth, outHeight)) {
       throw new IllegalArgumentException(
           "Cannot apply transformation on width: " + outWidth + " or height: " + outHeight
               + " less than or equal to zero and not Target.SIZE_ORIGINAL");
     }
+    BitmapPool bitmapPool = Glide.get(context).getBitmapPool();
     Bitmap toTransform = resource.get();
     int targetWidth = outWidth == Target.SIZE_ORIGINAL ? toTransform.getWidth() : outWidth;
     int targetHeight = outHeight == Target.SIZE_ORIGINAL ? toTransform.getHeight() : outHeight;
@@ -109,9 +130,9 @@ public abstract class BitmapTransformation implements Transformation<Bitmap> {
    * @param toTransform The {@link android.graphics.Bitmap} to transform.
    * @param outWidth    The ideal width of the transformed bitmap (the transformed width does not
    *                    need to match exactly).
-   * @param outHeight   The ideal height of the transformed bitmap (the transformed heightdoes not
+   * @param outHeight   The ideal height of the transformed bitmap (the transformed height does not
    *                    need to match exactly).
    */
-  protected abstract Bitmap transform(@NonNull BitmapPool pool, @NonNull Bitmap toTransform,
-      int outWidth, int outHeight);
+  protected abstract Bitmap transform(
+      @NonNull BitmapPool pool, @NonNull Bitmap toTransform, int outWidth, int outHeight);
 }

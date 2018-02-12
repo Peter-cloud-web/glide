@@ -2,27 +2,35 @@ package com.bumptech.glide.load.resource.bitmap;
 
 import android.annotation.TargetApi;
 import android.graphics.Bitmap;
+import android.graphics.Bitmap.Config;
 import android.graphics.BitmapFactory;
 import android.os.Build;
+import android.support.annotation.Nullable;
 import android.util.DisplayMetrics;
 import android.util.Log;
-
 import com.bumptech.glide.load.DecodeFormat;
+import com.bumptech.glide.load.ImageHeaderParser;
+import com.bumptech.glide.load.ImageHeaderParser.ImageType;
+import com.bumptech.glide.load.ImageHeaderParserUtils;
 import com.bumptech.glide.load.Option;
 import com.bumptech.glide.load.Options;
 import com.bumptech.glide.load.engine.Resource;
+import com.bumptech.glide.load.engine.bitmap_recycle.ArrayPool;
 import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool;
-import com.bumptech.glide.load.engine.bitmap_recycle.ByteArrayPool;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy.SampleSizeRounding;
+import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.Target;
+import com.bumptech.glide.util.LogTime;
 import com.bumptech.glide.util.Preconditions;
 import com.bumptech.glide.util.Util;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Queue;
 import java.util.Set;
 
@@ -30,7 +38,7 @@ import java.util.Set;
  * Downsamples, decodes, and rotates images according to their exif orientation.
  */
 public final class Downsampler {
-  private static final String TAG = "Downsampler";
+  static final String TAG = "Downsampler";
   /**
    * Indicates the {@link com.bumptech.glide.load.DecodeFormat} that will be used in conjunction
    * with the image format to determine the {@link android.graphics.Bitmap.Config} to provide to
@@ -45,8 +53,53 @@ public final class Downsampler {
    */
   public static final Option<DownsampleStrategy> DOWNSAMPLE_STRATEGY =
       Option.memory("com.bumptech.glide.load.resource.bitmap.Downsampler.DownsampleStrategy",
-          DownsampleStrategy.AT_LEAST);
+          DownsampleStrategy.DEFAULT);
+  /**
+   * Ensure that the size of the bitmap is fixed to the requested width and height of the
+   * resource from the caller.  The final resource dimensions may differ from the requested
+   * width and height, and thus setting this to true may result in the bitmap size differing
+   * from the resource dimensions.
+   *
+   * This can be used as a performance optimization for KitKat and above by fixing the size of the
+   * bitmap for a collection of requested resources so that the bitmap pool will not need to
+   * allocate new bitmaps for images of different sizes.
+   */
+  // Public API
+  @SuppressWarnings("WeakerAccess")
+  public static final Option<Boolean> FIX_BITMAP_SIZE_TO_REQUESTED_DIMENSIONS =
+      Option.memory("com.bumptech.glide.load.resource.bitmap.Downsampler.FixBitmapSize", false);
 
+  /**
+   * Indicates that it's safe or unsafe to decode {@link Bitmap}s with
+   * {@link Bitmap.Config#HARDWARE}.
+   *
+   * <p>Callers should almost never set this value to {@code true} manually. Glide will already do
+   * so when Glide believes it's safe to do (when no transformations are applied). Instead, callers
+   * can set this value to {@code false} to prevent Glide from decoding hardware bitmaps if Glide
+   * is unable to detect that hardware bitmaps are unsafe. For example, you should set this to
+   * {@code false} if you plan to draw it to a software {@link android.graphics.Canvas} or if you
+   * plan to inspect the {@link Bitmap}s pixels with {@link Bitmap#getPixel(int, int)} or
+   * {@link Bitmap#getPixels(int[], int, int, int, int, int, int)}.
+   *
+   * <p>Callers can disable hardware {@link Bitmap}s for all loads using
+   * {@link com.bumptech.glide.GlideBuilder#setDefaultRequestOptions(RequestOptions)}.
+   *
+   * <p>This option is ignored unless we're on Android O+.
+   */
+  public static final Option<Boolean> ALLOW_HARDWARE_CONFIG =
+      Option.memory("com.bumtpech.glide.load.resource.bitmap.Downsampler.AllowHardwareDecode");
+
+  private static final String WBMP_MIME_TYPE = "image/vnd.wap.wbmp";
+  private static final String ICO_MIME_TYPE = "image/x-ico";
+  private static final Set<String> NO_DOWNSAMPLE_PRE_N_MIME_TYPES =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  WBMP_MIME_TYPE,
+                  ICO_MIME_TYPE
+              )
+          )
+      );
   private static final DecodeCallbacks EMPTY_CALLBACKS = new DecodeCallbacks() {
     @Override
     public void onObtainBounds() {
@@ -54,7 +107,7 @@ public final class Downsampler {
     }
 
     @Override
-    public void onDecodeComplete(BitmapPool bitmapPool, Bitmap downsampled) throws IOException {
+    public void onDecodeComplete(BitmapPool bitmapPool, Bitmap downsampled) {
       // Do nothing.
     }
   };
@@ -67,27 +120,30 @@ public final class Downsampler {
           )
       );
   private static final Queue<BitmapFactory.Options> OPTIONS_QUEUE = Util.createQueue(0);
-  // 5MB. This is the max image header size we can handle, we preallocate a much smaller buffer
+  // 10MB. This is the max image header size we can handle, we preallocate a much smaller buffer
   // but will resize up to this amount if necessary.
-  private static final int MARK_POSITION = 5 * 1024 * 1024;
+  private static final int MARK_POSITION = 10 * 1024 * 1024;
 
   private final BitmapPool bitmapPool;
   private final DisplayMetrics displayMetrics;
-  private final ByteArrayPool byteArrayPool;
+  private final ArrayPool byteArrayPool;
+  private final List<ImageHeaderParser> parsers;
+  private final HardwareConfigState hardwareConfigState = HardwareConfigState.getInstance();
 
-  public Downsampler(DisplayMetrics displayMetrics, BitmapPool bitmapPool,
-      ByteArrayPool byteArrayPool) {
+  public Downsampler(List<ImageHeaderParser> parsers, DisplayMetrics displayMetrics,
+      BitmapPool bitmapPool, ArrayPool byteArrayPool) {
+    this.parsers = parsers;
     this.displayMetrics = Preconditions.checkNotNull(displayMetrics);
     this.bitmapPool = Preconditions.checkNotNull(bitmapPool);
     this.byteArrayPool = Preconditions.checkNotNull(byteArrayPool);
   }
 
-  public boolean handles(InputStream is) {
+  public boolean handles(@SuppressWarnings("unused") InputStream is) {
     // We expect Downsampler to handle any available type Android supports.
     return true;
   }
 
-  public boolean handles(ByteBuffer byteBuffer) {
+  public boolean handles(@SuppressWarnings("unused") ByteBuffer byteBuffer) {
     // We expect downsampler to handle any available type Android supports.
     return true;
   }
@@ -128,22 +184,29 @@ public final class Downsampler {
    * @return A new bitmap containing the image from the given InputStream, or recycle if recycle is
    * not null.
    */
-  @SuppressWarnings("resource")
+  @SuppressWarnings({"resource", "deprecation"})
   public Resource<Bitmap> decode(InputStream is, int requestedWidth, int requestedHeight,
       Options options, DecodeCallbacks callbacks) throws IOException {
     Preconditions.checkArgument(is.markSupported(), "You must provide an InputStream that supports"
         + " mark()");
 
-    byte[] bytesForOptions = byteArrayPool.get(ByteArrayPool.STANDARD_BUFFER_SIZE_BYTES);
+    byte[] bytesForOptions = byteArrayPool.get(ArrayPool.STANDARD_BUFFER_SIZE_BYTES, byte[].class);
     BitmapFactory.Options bitmapFactoryOptions = getDefaultOptions();
     bitmapFactoryOptions.inTempStorage = bytesForOptions;
 
     DecodeFormat decodeFormat = options.get(DECODE_FORMAT);
     DownsampleStrategy downsampleStrategy = options.get(DOWNSAMPLE_STRATEGY);
+    boolean fixBitmapToRequestedDimensions = options.get(FIX_BITMAP_SIZE_TO_REQUESTED_DIMENSIONS);
+    boolean isHardwareConfigAllowed =
+      options.get(ALLOW_HARDWARE_CONFIG) != null && options.get(ALLOW_HARDWARE_CONFIG);
+    if (decodeFormat == DecodeFormat.PREFER_ARGB_8888_DISALLOW_HARDWARE) {
+      isHardwareConfigAllowed = false;
+    }
 
     try {
       Bitmap result = decodeFromWrappedStreams(is, bitmapFactoryOptions,
-          downsampleStrategy, decodeFormat, requestedWidth, requestedHeight, callbacks);
+          downsampleStrategy, decodeFormat, isHardwareConfigAllowed, requestedWidth,
+          requestedHeight, fixBitmapToRequestedDimensions, callbacks);
       return BitmapResource.obtain(result, bitmapPool);
     } finally {
       releaseOptions(bitmapFactoryOptions);
@@ -153,31 +216,93 @@ public final class Downsampler {
 
   private Bitmap decodeFromWrappedStreams(InputStream is,
       BitmapFactory.Options options, DownsampleStrategy downsampleStrategy,
-      DecodeFormat decodeFormat, int requestedWidth, int requestedHeight,
+      DecodeFormat decodeFormat, boolean isHardwareConfigAllowed, int requestedWidth,
+      int requestedHeight, boolean fixBitmapToRequestedDimensions,
       DecodeCallbacks callbacks) throws IOException {
+    long startTime = LogTime.getLogTime();
 
-    int[] sourceDimensions = getDimensions(is, options, callbacks);
+    int[] sourceDimensions = getDimensions(is, options, callbacks, bitmapPool);
     int sourceWidth = sourceDimensions[0];
     int sourceHeight = sourceDimensions[1];
     String sourceMimeType = options.outMimeType;
 
-    int orientation = getOrientation(is);
-    int degreesToRotate = TransformationUtils.getExifOrientationDegrees(getOrientation(is));
-
-    options.inPreferredConfig = getConfig(is, decodeFormat);
-    if (options.inPreferredConfig != Bitmap.Config.ARGB_8888) {
-      options.inDither = true;
+    // If we failed to obtain the image dimensions, we may end up with an incorrectly sized Bitmap,
+    // so we want to use a mutable Bitmap type. One way this can happen is if the image header is so
+    // large (10mb+) that our attempt to use inJustDecodeBounds fails and we're forced to decode the
+    // full size image.
+    if (sourceWidth == -1 || sourceHeight == -1) {
+      isHardwareConfigAllowed = false;
     }
-    calculateScaling(downsampleStrategy, degreesToRotate, sourceWidth, sourceHeight, requestedWidth,
-        requestedHeight, options);
 
-    Bitmap downsampled = downsampleWithSize(is, options, bitmapPool, sourceWidth,
-        sourceHeight, callbacks);
+    int orientation = ImageHeaderParserUtils.getOrientation(parsers, is, byteArrayPool);
+    int degreesToRotate = TransformationUtils.getExifOrientationDegrees(orientation);
+    boolean isExifOrientationRequired = TransformationUtils.isExifOrientationRequired(orientation);
+
+    int targetWidth = requestedWidth == Target.SIZE_ORIGINAL ? sourceWidth : requestedWidth;
+    int targetHeight = requestedHeight == Target.SIZE_ORIGINAL ? sourceHeight : requestedHeight;
+
+    ImageType imageType = ImageHeaderParserUtils.getType(parsers, is, byteArrayPool);
+
+    calculateScaling(
+        imageType,
+        is,
+        callbacks,
+        bitmapPool,
+        downsampleStrategy,
+        degreesToRotate,
+        sourceWidth,
+        sourceHeight,
+        targetWidth,
+        targetHeight,
+        options);
+    calculateConfig(
+        is,
+        decodeFormat,
+        isHardwareConfigAllowed,
+        isExifOrientationRequired,
+        options,
+        targetWidth,
+        targetHeight);
+
+    boolean isKitKatOrGreater = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT;
+    // Prior to KitKat, the inBitmap size must exactly match the size of the bitmap we're decoding.
+    if ((options.inSampleSize == 1 || isKitKatOrGreater) && shouldUsePool(imageType)) {
+      int expectedWidth;
+      int expectedHeight;
+      if (sourceWidth >= 0 && sourceHeight >= 0
+          && fixBitmapToRequestedDimensions && isKitKatOrGreater) {
+        expectedWidth = targetWidth;
+        expectedHeight = targetHeight;
+      } else {
+        float densityMultiplier = isScaling(options)
+            ? (float) options.inTargetDensity / options.inDensity : 1f;
+        int sampleSize = options.inSampleSize;
+        int downsampledWidth = (int) Math.ceil(sourceWidth / (float) sampleSize);
+        int downsampledHeight = (int) Math.ceil(sourceHeight / (float) sampleSize);
+        expectedWidth = Math.round(downsampledWidth * densityMultiplier);
+        expectedHeight = Math.round(downsampledHeight * densityMultiplier);
+
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+          Log.v(TAG, "Calculated target [" + expectedWidth + "x" + expectedHeight + "] for source"
+              + " [" + sourceWidth + "x" + sourceHeight + "]"
+              + ", sampleSize: " + sampleSize
+              + ", targetDensity: " + options.inTargetDensity
+              + ", density: " + options.inDensity
+              + ", density multiplier: " + densityMultiplier);
+        }
+      }
+      // If this isn't an image, or BitmapFactory was unable to parse the size, width and height
+      // will be -1 here.
+      if (expectedWidth > 0 && expectedHeight > 0) {
+        setInBitmap(options, bitmapPool, expectedWidth, expectedHeight);
+      }
+    }
+    Bitmap downsampled = decodeStream(is, options, callbacks, bitmapPool);
     callbacks.onDecodeComplete(bitmapPool, downsampled);
 
     if (Log.isLoggable(TAG, Log.VERBOSE)) {
       logDecode(sourceWidth, sourceHeight, sourceMimeType, options, downsampled,
-          requestedWidth, requestedHeight);
+          requestedWidth, requestedHeight, startTime);
     }
 
     Bitmap rotated = null;
@@ -195,17 +320,26 @@ public final class Downsampler {
     return rotated;
   }
 
-  // Visible for testing.
-  static void calculateScaling(DownsampleStrategy downsampleStrategy, int degreesToRotate,
-      int sourceWidth, int sourceHeight, int requestedWidth, int requestedHeight,
-      BitmapFactory.Options options) {
+  private static void calculateScaling(
+      ImageType imageType,
+      InputStream is,
+      DecodeCallbacks decodeCallbacks,
+      BitmapPool bitmapPool,
+      DownsampleStrategy downsampleStrategy,
+      int degreesToRotate,
+      int sourceWidth,
+      int sourceHeight,
+      int targetWidth,
+      int targetHeight,
+      BitmapFactory.Options options) throws IOException {
     // We can't downsample source content if we can't determine its dimensions.
     if (sourceWidth <= 0 || sourceHeight <= 0) {
+      if (Log.isLoggable(TAG, Log.DEBUG)) {
+        Log.d(TAG, "Unable to determine dimensions for: " + imageType
+            + " with target [" + targetWidth + "x" + targetHeight + "]");
+      }
       return;
     }
-
-    int targetHeight = requestedHeight == Target.SIZE_ORIGINAL ? sourceHeight : requestedHeight;
-    int targetWidth = requestedWidth == Target.SIZE_ORIGINAL ? sourceWidth : requestedWidth;
 
     final float exactScaleFactor;
     if (degreesToRotate == 90 || degreesToRotate == 270) {
@@ -222,7 +356,9 @@ public final class Downsampler {
 
     if (exactScaleFactor <= 0f) {
       throw new IllegalArgumentException("Cannot scale with factor: " + exactScaleFactor
-          + " from: " + downsampleStrategy);
+          + " from: " + downsampleStrategy
+          + ", source: [" + sourceWidth + "x" + sourceHeight + "]"
+          + ", target: [" + targetWidth + "x" + targetHeight + "]");
     }
     SampleSizeRounding rounding = downsampleStrategy.getSampleSizeRounding(sourceWidth,
         sourceHeight, targetWidth, targetHeight);
@@ -230,8 +366,8 @@ public final class Downsampler {
       throw new IllegalArgumentException("Cannot round with null rounding");
     }
 
-    int outWidth = (int) (exactScaleFactor * sourceWidth + 0.5f);
-    int outHeight = (int) (exactScaleFactor * sourceHeight + 0.5f);
+    int outWidth = round(exactScaleFactor * sourceWidth);
+    int outHeight = round(exactScaleFactor * sourceHeight);
 
     int widthScaleFactor = sourceWidth / outWidth;
     int heightScaleFactor = sourceHeight / outHeight;
@@ -240,19 +376,74 @@ public final class Downsampler {
         ? Math.max(widthScaleFactor, heightScaleFactor)
         : Math.min(widthScaleFactor, heightScaleFactor);
 
-    int powerOfTwoSampleSize = Math.max(1, Integer.highestOneBit(scaleFactor));
-    if (rounding == SampleSizeRounding.MEMORY && powerOfTwoSampleSize < (1.f / exactScaleFactor)) {
-      powerOfTwoSampleSize = powerOfTwoSampleSize << 1;
+    int powerOfTwoSampleSize;
+    // BitmapFactory does not support downsampling wbmp files on platforms <= M. See b/27305903.
+    if (Build.VERSION.SDK_INT <= 23
+        && NO_DOWNSAMPLE_PRE_N_MIME_TYPES.contains(options.outMimeType)) {
+      powerOfTwoSampleSize = 1;
+    } else {
+      powerOfTwoSampleSize = Math.max(1, Integer.highestOneBit(scaleFactor));
+      if (rounding == SampleSizeRounding.MEMORY
+          && powerOfTwoSampleSize < (1.f / exactScaleFactor)) {
+        powerOfTwoSampleSize = powerOfTwoSampleSize << 1;
+      }
     }
 
-    float adjustedScaleFactor = powerOfTwoSampleSize * exactScaleFactor;
-
+    // Here we mimic framework logic for determining how inSampleSize division is rounded on various
+    // versions of Android. The logic here has been tested on emulators for Android versions 15-26.
+    // PNG - Always uses floor
+    // JPEG - Always uses ceiling
+    // Webp - Prior to N, always uses floor. At and after N, always uses round.
     options.inSampleSize = powerOfTwoSampleSize;
+    int powerOfTwoWidth;
+    int powerOfTwoHeight;
+    if (imageType == ImageType.JPEG) {
+      // libjpegturbo can downsample up to a sample size of 8. libjpegturbo uses ceiling to round.
+      // After libjpegturbo's native rounding, skia does a secondary scale using floor
+      // (integer division). Here we replicate that logic.
+      int nativeScaling = Math.min(powerOfTwoSampleSize, 8);
+      powerOfTwoWidth = (int) Math.ceil(sourceWidth / (float) nativeScaling);
+      powerOfTwoHeight = (int) Math.ceil(sourceHeight / (float) nativeScaling);
+      int secondaryScaling = powerOfTwoSampleSize / 8;
+      if (secondaryScaling > 0) {
+        powerOfTwoWidth = powerOfTwoWidth / secondaryScaling;
+        powerOfTwoHeight = powerOfTwoHeight / secondaryScaling;
+      }
+    } else if (imageType == ImageType.PNG || imageType == ImageType.PNG_A) {
+      powerOfTwoWidth = (int) Math.floor(sourceWidth / (float) powerOfTwoSampleSize);
+      powerOfTwoHeight = (int) Math.floor(sourceHeight / (float) powerOfTwoSampleSize);
+    } else if (imageType == ImageType.WEBP || imageType == ImageType.WEBP_A) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        powerOfTwoWidth = Math.round(sourceWidth / (float) powerOfTwoSampleSize);
+        powerOfTwoHeight = Math.round(sourceHeight / (float) powerOfTwoSampleSize);
+      } else {
+        powerOfTwoWidth = (int) Math.floor(sourceWidth / (float) powerOfTwoSampleSize);
+        powerOfTwoHeight = (int) Math.floor(sourceHeight / (float) powerOfTwoSampleSize);
+      }
+    } else if (
+        sourceWidth % powerOfTwoSampleSize != 0 || sourceHeight % powerOfTwoSampleSize != 0) {
+      // If we're not confident the image is in one of our types, fall back to checking the
+      // dimensions again. inJustDecodeBounds decodes do obey inSampleSize.
+      int[] dimensions = getDimensions(is, options, decodeCallbacks, bitmapPool);
+      // Power of two downsampling in BitmapFactory uses a variety of random factors to determine
+      // rounding that we can't reliably replicate for all image formats. Use ceiling here to make
+      // sure that we at least provide a Bitmap that's large enough to fit the content we're going
+      // to load.
+      powerOfTwoWidth = dimensions[0];
+      powerOfTwoHeight = dimensions[1];
+    } else {
+      powerOfTwoWidth = sourceWidth / powerOfTwoSampleSize;
+      powerOfTwoHeight = sourceHeight / powerOfTwoSampleSize;
+    }
+
+    double adjustedScaleFactor = downsampleStrategy.getScaleFactor(
+        powerOfTwoWidth, powerOfTwoHeight, targetWidth, targetHeight);
+
     // Density scaling is only supported if inBitmap is null prior to KitKat. Avoid setting
     // densities here so we calculate the final Bitmap size correctly.
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-      options.inTargetDensity = (int) (1000 * adjustedScaleFactor + 0.5f);
-      options.inDensity = 1000;
+      options.inTargetDensity = adjustTargetDensityForError(adjustedScaleFactor);
+      options.inDensity = getDensityMultiplier(adjustedScaleFactor);
     }
     if (isScaling(options)) {
       options.inScaled = true;
@@ -264,6 +455,7 @@ public final class Downsampler {
       Log.v(TAG, "Calculate scaling"
           + ", source: [" + sourceWidth + "x" + sourceHeight + "]"
           + ", target: [" + targetWidth + "x" + targetHeight + "]"
+          + ", power of two scaled: [" + powerOfTwoWidth + "x" + powerOfTwoHeight + "]"
           + ", exact scale factor: " + exactScaleFactor
           + ", power of 2 sample size: " + powerOfTwoSampleSize
           + ", adjusted scale factor: " + adjustedScaleFactor
@@ -272,98 +464,86 @@ public final class Downsampler {
     }
   }
 
-  private int getOrientation(InputStream is) throws IOException {
-    is.mark(MARK_POSITION);
-    int orientation = ImageHeaderParser.UNKNOWN_ORIENTATION;
-    try {
-      orientation = new ImageHeaderParser(is, byteArrayPool).getOrientation();
-    } catch (IOException e) {
-      if (Log.isLoggable(TAG, Log.DEBUG)) {
-        Log.d(TAG, "Cannot determine the image orientation from header", e);
-      }
-    } finally {
-      is.reset();
-    }
-    return orientation;
+  /**
+   * BitmapFactory calculates the density scale factor as a float. This introduces some non-trivial
+   * error. This method attempts to account for that error by adjusting the inTargetDensity so that
+   * the final scale factor is as close to our target as possible.
+   */
+  private static int adjustTargetDensityForError(double adjustedScaleFactor) {
+    int densityMultiplier = getDensityMultiplier(adjustedScaleFactor);
+    int targetDensity = round(densityMultiplier * adjustedScaleFactor);
+    float scaleFactorWithError = targetDensity / (float) densityMultiplier;
+    double difference = adjustedScaleFactor / scaleFactorWithError;
+    return round(difference * targetDensity);
   }
 
-  private Bitmap downsampleWithSize(InputStream is, BitmapFactory.Options options,
-      BitmapPool pool, int sourceWidth, int sourceHeight, DecodeCallbacks callbacks)
-      throws IOException {
-    // Prior to KitKat, the inBitmap size must exactly match the size of the bitmap we're decoding.
-    if ((options.inSampleSize == 1 || Build.VERSION_CODES.KITKAT <= Build.VERSION.SDK_INT)
-        && shouldUsePool(is)) {
-
-      float densityMultiplier = isScaling(options)
-          ? (float) options.inTargetDensity / options.inDensity : 1f;
-
-      int sampleSize = options.inSampleSize;
-      int downsampledWidth = (int) Math.ceil(sourceWidth / (float) sampleSize);
-      int downsampledHeight = (int) Math.ceil(sourceHeight / (float) sampleSize);
-      int expectedWidth = Math.round(downsampledWidth * densityMultiplier);
-      int expectedHeight = Math.round(downsampledHeight * densityMultiplier);
-
-      if (Log.isLoggable(TAG, Log.VERBOSE)) {
-        Log.v(TAG, "Calculated target [" + expectedWidth + "x" + expectedHeight + "] for source"
-            + " [" + sourceWidth + "x" + sourceHeight + "]"
-            + ", sampleSize: " + sampleSize
-            + ", targetDensity: " + options.inTargetDensity
-            + ", density: " + options.inDensity
-            + ", density multiplier: " + densityMultiplier);
-      }
-      // If this isn't an image, or BitmapFactory was unable to parse the size, width and height
-      // will be -1 here.
-      if (expectedWidth > 0 && expectedHeight > 0) {
-        setInBitmap(options, pool, expectedWidth, expectedHeight, options.inPreferredConfig);
-      }
-    }
-    return decodeStream(is, options, callbacks);
+  private static int getDensityMultiplier(double adjustedScaleFactor) {
+    return (int) Math.round(
+        Integer.MAX_VALUE
+            * (adjustedScaleFactor <= 1D ? adjustedScaleFactor : 1 / adjustedScaleFactor));
   }
 
-  private boolean shouldUsePool(InputStream is) throws IOException {
+  // This is weird, but it matches the logic in a bunch of Android views/framework classes for
+  // rounding.
+  private static int round(double value) {
+    return (int) (value + 0.5d);
+  }
+
+  private boolean shouldUsePool(ImageType imageType) {
     // On KitKat+, any bitmap (of a given config) can be used to decode any other bitmap
     // (with the same config).
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
       return true;
     }
 
-    is.mark(MARK_POSITION);
-    try {
-      final ImageHeaderParser.ImageType type = new ImageHeaderParser(is, byteArrayPool).getType();
-      // We cannot reuse bitmaps when decoding images that are not PNG or JPG prior to KitKat.
-      // See: https://groups.google.com/forum/#!msg/android-developers/Mp0MFVFi1Fo/e8ZQ9FGdWdEJ
-      return TYPES_THAT_USE_POOL_PRE_KITKAT.contains(type);
-    } catch (IOException e) {
-      if (Log.isLoggable(TAG, Log.DEBUG)) {
-        Log.d(TAG, "Cannot determine the image type from header", e);
-      }
-    } finally {
-      is.reset();
-    }
-    return false;
+    // We cannot reuse bitmaps when decoding images that are not PNG or JPG prior to KitKat.
+    // See: https://groups.google.com/forum/#!msg/android-developers/Mp0MFVFi1Fo/e8ZQ9FGdWdEJ
+    return TYPES_THAT_USE_POOL_PRE_KITKAT.contains(imageType);
   }
 
-  private Bitmap.Config getConfig(InputStream is, DecodeFormat format) throws IOException {
+  @SuppressWarnings("deprecation")
+  private void calculateConfig(
+      InputStream is,
+      DecodeFormat format,
+      boolean isHardwareConfigAllowed,
+      boolean isExifOrientationRequired,
+      BitmapFactory.Options optionsWithScaling,
+      int targetWidth,
+      int targetHeight) {
+
+    if (hardwareConfigState.setHardwareConfigIfAllowed(
+        targetWidth,
+        targetHeight,
+        optionsWithScaling,
+        format,
+        isHardwareConfigAllowed,
+        isExifOrientationRequired)) {
+      return;
+    }
+
     // Changing configs can cause skewing on 4.1, see issue #128.
     if (format == DecodeFormat.PREFER_ARGB_8888
+        || format == DecodeFormat.PREFER_ARGB_8888_DISALLOW_HARDWARE
         || Build.VERSION.SDK_INT == Build.VERSION_CODES.JELLY_BEAN) {
-      return Bitmap.Config.ARGB_8888;
+      optionsWithScaling.inPreferredConfig = Bitmap.Config.ARGB_8888;
+      return;
     }
 
     boolean hasAlpha = false;
-    is.mark(MARK_POSITION);
     try {
-      hasAlpha = new ImageHeaderParser(is, byteArrayPool).hasAlpha();
+      hasAlpha = ImageHeaderParserUtils.getType(parsers, is, byteArrayPool).hasAlpha();
     } catch (IOException e) {
       if (Log.isLoggable(TAG, Log.DEBUG)) {
         Log.d(TAG, "Cannot determine whether the image has alpha or not from header"
             + ", format " + format, e);
       }
-    } finally {
-      is.reset();
     }
 
-    return hasAlpha ? Bitmap.Config.ARGB_8888 : Bitmap.Config.RGB_565;
+    optionsWithScaling.inPreferredConfig =
+        hasAlpha ? Bitmap.Config.ARGB_8888 : Bitmap.Config.RGB_565;
+    if (optionsWithScaling.inPreferredConfig == Config.RGB_565) {
+      optionsWithScaling.inDither = true;
+    }
   }
 
   /**
@@ -375,15 +555,15 @@ public final class Downsampler {
    * @return an array containing the dimensions of the image in the form {width, height}.
    */
   private static int[] getDimensions(InputStream is, BitmapFactory.Options options,
-      DecodeCallbacks decodeCallbacks) throws IOException {
+      DecodeCallbacks decodeCallbacks, BitmapPool bitmapPool) throws IOException {
     options.inJustDecodeBounds = true;
-    decodeStream(is, options, decodeCallbacks);
+    decodeStream(is, options, decodeCallbacks, bitmapPool);
     options.inJustDecodeBounds = false;
     return new int[] { options.outWidth, options.outHeight };
   }
 
   private static Bitmap decodeStream(InputStream is, BitmapFactory.Options options,
-      DecodeCallbacks callbacks) throws IOException {
+      DecodeCallbacks callbacks, BitmapPool bitmapPool) throws IOException {
     if (options.inJustDecodeBounds) {
       is.mark(MARK_POSITION);
     } else {
@@ -391,7 +571,7 @@ public final class Downsampler {
       // size. To avoid unnecessary allocations reading image data, we fix the mark limit so that it
       // is no larger than our current buffer size here. We need to do so immediately before
       // decoding the full image to avoid having our mark limit overridden by other calls to
-      // markand reset. See issue #225.
+      // mark and reset. See issue #225.
       callbacks.onObtainBounds();
     }
     // BitmapFactory.Options out* variables are reset by most calls to decodeStream, successful or
@@ -400,17 +580,35 @@ public final class Downsampler {
     int sourceHeight = options.outHeight;
     String outMimeType = options.outMimeType;
     final Bitmap result;
+    TransformationUtils.getBitmapDrawableLock().lock();
     try {
       result = BitmapFactory.decodeStream(is, null, options);
     } catch (IllegalArgumentException e) {
-      throw newIoExceptionForInBitmapAssertion(e, sourceWidth, sourceHeight, outMimeType, options);
+      IOException bitmapAssertionException =
+          newIoExceptionForInBitmapAssertion(e, sourceWidth, sourceHeight, outMimeType, options);
+      if (Log.isLoggable(TAG, Log.DEBUG)) {
+        Log.d(TAG, "Failed to decode with inBitmap, trying again without Bitmap re-use",
+            bitmapAssertionException);
+      }
+      if (options.inBitmap != null) {
+        try {
+          is.reset();
+          bitmapPool.put(options.inBitmap);
+          options.inBitmap = null;
+          return decodeStream(is, options, callbacks, bitmapPool);
+        } catch (IOException resetException) {
+          throw bitmapAssertionException;
+        }
+      }
+      throw bitmapAssertionException;
+    } finally {
+      TransformationUtils.getBitmapDrawableLock().unlock();
     }
 
     if (options.inJustDecodeBounds) {
       is.reset();
 
     }
-
     return result;
   }
 
@@ -420,7 +618,8 @@ public final class Downsampler {
   }
 
   private static void logDecode(int sourceWidth, int sourceHeight, String outMimeType,
-      BitmapFactory.Options options, Bitmap result, int requestedWidth, int requestedHeight) {
+      BitmapFactory.Options options, Bitmap result, int requestedWidth, int requestedHeight,
+      long startTime) {
     Log.v(TAG, "Decoded " + getBitmapString(result)
         + " from [" + sourceWidth + "x" + sourceHeight + "] " + outMimeType
         + " with inBitmap " + getInBitmapString(options)
@@ -428,34 +627,31 @@ public final class Downsampler {
         + ", sample size: " + options.inSampleSize
         + ", density: " + options.inDensity
         + ", target density: " + options.inTargetDensity
-        + ", thread: " + Thread.currentThread().getName());
+        + ", thread: " + Thread.currentThread().getName()
+        + ", duration: " + LogTime.getElapsedMillis(startTime));
   }
 
-  @TargetApi(Build.VERSION_CODES.HONEYCOMB)
   private static String getInBitmapString(BitmapFactory.Options options) {
-    return Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB
-        ? getBitmapString(options.inBitmap) : null;
+    return getBitmapString(options.inBitmap);
   }
 
+  @Nullable
   @TargetApi(Build.VERSION_CODES.KITKAT)
   private static String getBitmapString(Bitmap bitmap) {
-    final String result;
     if (bitmap == null) {
-      result = null;
-    } else {
-      String sizeString = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT
-          ? " (" + bitmap.getAllocationByteCount() + ")" : "";
-      result = "[" + bitmap.getWidth() + "x" + bitmap.getHeight() + "] " + bitmap.getConfig()
-          + sizeString;
+      return null;
     }
-    return result;
+
+    String sizeString = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT
+        ? " (" + bitmap.getAllocationByteCount() + ")" : "";
+    return  "[" + bitmap.getWidth() + "x" + bitmap.getHeight() + "] " + bitmap.getConfig()
+        + sizeString;
   }
 
   // BitmapFactory throws an IllegalArgumentException if any error occurs attempting to decode a
   // file when inBitmap is non-null, including those caused by partial or corrupt data. We still log
   // the error because the IllegalArgumentException is supposed to catch errors reusing Bitmaps, so
   // want some useful log output. In most cases this can be safely treated as a normal IOException.
-  @TargetApi(Build.VERSION_CODES.HONEYCOMB)
   private static IOException newIoExceptionForInBitmapAssertion(IllegalArgumentException e,
       int outWidth, int outHeight, String outMimeType, BitmapFactory.Options options) {
     return new IOException("Exception decoding bitmap"
@@ -465,16 +661,33 @@ public final class Downsampler {
           + ", inBitmap: " + getInBitmapString(options), e);
   }
 
-  @TargetApi(Build.VERSION_CODES.HONEYCOMB)
-  private static void setInBitmap(BitmapFactory.Options options, BitmapPool bitmapPool, int width,
-      int height, Bitmap.Config config) {
-    if (Build.VERSION_CODES.HONEYCOMB <= Build.VERSION.SDK_INT) {
-      // BitmapFactory will clear out the Bitmap before writing to it, so getDirty is safe.
-      options.inBitmap = bitmapPool.getDirty(width, height, config);
+  @SuppressWarnings("PMD.CollapsibleIfStatements")
+  @TargetApi(Build.VERSION_CODES.O)
+  private static void setInBitmap(
+      BitmapFactory.Options options, BitmapPool bitmapPool, int width, int height) {
+    @Nullable Bitmap.Config expectedConfig = null;
+    // Avoid short circuiting, it appears to break on some devices.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      if (options.inPreferredConfig == Config.HARDWARE) {
+        return;
+      }
+      // On API 26 outConfig may be null for some images even if the image is valid, can be decoded
+      // and outWidth/outHeight/outColorSpace are populated (see b/71513049).
+      expectedConfig = options.outConfig;
     }
+
+    if (expectedConfig == null) {
+      // We're going to guess that BitmapFactory will return us the config we're requesting. This
+      // isn't always the case, even though our guesses tend to be conservative and prefer configs
+      // of larger sizes so that the Bitmap will fit our image anyway. If we're wrong here and the
+      // config we choose is too small, our initial decode will fail, but we will retry with no
+      // inBitmap which will succeed so if we're wrong here, we're less efficient but still correct.
+      expectedConfig = options.inPreferredConfig;
+    }
+    // BitmapFactory will clear out the Bitmap before writing to it, so getDirty is safe.
+    options.inBitmap = bitmapPool.getDirty(width, height, expectedConfig);
   }
 
-  @TargetApi(Build.VERSION_CODES.HONEYCOMB)
   private static synchronized BitmapFactory.Options getDefaultOptions() {
     BitmapFactory.Options decodeBitmapOptions;
     synchronized (OPTIONS_QUEUE) {
@@ -495,7 +708,7 @@ public final class Downsampler {
     }
   }
 
-  @TargetApi(Build.VERSION_CODES.HONEYCOMB)
+  @SuppressWarnings("deprecation")
   private static void resetOptions(BitmapFactory.Options decodeBitmapOptions) {
     decodeBitmapOptions.inTempStorage = null;
     decodeBitmapOptions.inDither = false;
@@ -508,11 +721,8 @@ public final class Downsampler {
     decodeBitmapOptions.outWidth = 0;
     decodeBitmapOptions.outHeight = 0;
     decodeBitmapOptions.outMimeType = null;
-
-    if (Build.VERSION_CODES.HONEYCOMB <= Build.VERSION.SDK_INT) {
-      decodeBitmapOptions.inBitmap = null;
-      decodeBitmapOptions.inMutable = true;
-    }
+    decodeBitmapOptions.inBitmap = null;
+    decodeBitmapOptions.inMutable = true;
   }
 
   /**

@@ -1,10 +1,12 @@
 package com.bumptech.glide.load.engine;
 
+import android.support.annotation.NonNull;
 import com.bumptech.glide.load.Key;
 import com.bumptech.glide.load.Options;
 import com.bumptech.glide.load.Transformation;
+import com.bumptech.glide.load.engine.bitmap_recycle.ArrayPool;
 import com.bumptech.glide.util.LruCache;
-
+import com.bumptech.glide.util.Util;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 
@@ -13,6 +15,7 @@ import java.security.MessageDigest;
  */
 final class ResourceCacheKey implements Key {
   private static final LruCache<Class<?>, byte[]> RESOURCE_CLASS_BYTES = new LruCache<>(50);
+  private final ArrayPool arrayPool;
   private final Key sourceKey;
   private final Key signature;
   private final int width;
@@ -21,8 +24,16 @@ final class ResourceCacheKey implements Key {
   private final Options options;
   private final Transformation<?> transformation;
 
-  public ResourceCacheKey(Key sourceKey, Key signature, int width, int height,
-      Transformation<?> appliedTransformation, Class<?> decodedResourceClass, Options options) {
+  ResourceCacheKey(
+      ArrayPool arrayPool,
+      Key sourceKey,
+      Key signature,
+      int width,
+      int height,
+      Transformation<?> appliedTransformation,
+      Class<?> decodedResourceClass,
+      Options options) {
+    this.arrayPool = arrayPool;
     this.sourceKey = sourceKey;
     this.signature = signature;
     this.width = width;
@@ -37,10 +48,10 @@ final class ResourceCacheKey implements Key {
     if (o instanceof ResourceCacheKey) {
       ResourceCacheKey other = (ResourceCacheKey) o;
       return height == other.height && width == other.width
-          && (transformation == null
-              ? other.transformation == null : transformation.equals(other.transformation))
+          && Util.bothNullOrEqual(transformation, other.transformation)
           && decodedResourceClass.equals(other.decodedResourceClass)
-          && sourceKey.equals(other.sourceKey) && signature.equals(other.signature)
+          && sourceKey.equals(other.sourceKey)
+          && signature.equals(other.signature)
           && options.equals(other.options);
     }
     return false;
@@ -62,8 +73,9 @@ final class ResourceCacheKey implements Key {
 
   // TODO: Include relevant options?
   @Override
-  public void updateDiskCacheKey(MessageDigest messageDigest) {
-    byte[] dimensions = ByteBuffer.allocate(8).putInt(width).putInt(height).array();
+  public void updateDiskCacheKey(@NonNull MessageDigest messageDigest) {
+    byte[] dimensions = arrayPool.getExact(8, byte[].class);
+    ByteBuffer.wrap(dimensions).putInt(width).putInt(height).array();
     signature.updateDiskCacheKey(messageDigest);
     sourceKey.updateDiskCacheKey(messageDigest);
     messageDigest.update(dimensions);
@@ -72,6 +84,7 @@ final class ResourceCacheKey implements Key {
     }
     options.updateDiskCacheKey(messageDigest);
     messageDigest.update(getResourceClassBytes());
+    arrayPool.put(dimensions);
   }
 
   private byte[] getResourceClassBytes() {

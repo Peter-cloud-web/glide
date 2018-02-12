@@ -17,8 +17,9 @@ package com.bumptech.glide.load.resource.bitmap;
  *  limitations under the License.
  */
 
-import com.bumptech.glide.load.engine.bitmap_recycle.ByteArrayPool;
-
+import android.support.annotation.NonNull;
+import android.support.annotation.VisibleForTesting;
+import com.bumptech.glide.load.engine.bitmap_recycle.ArrayPool;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -62,18 +63,18 @@ public class RecyclableBufferedInputStream extends FilterInputStream {
    * The current position within the byte array {@code buf}.
    */
   private int pos;
-  private final ByteArrayPool byteArrayPool;
+  private final ArrayPool byteArrayPool;
 
-  public RecyclableBufferedInputStream(InputStream in, ByteArrayPool byteArrayPool) {
-    this(in, byteArrayPool, ByteArrayPool.STANDARD_BUFFER_SIZE_BYTES);
+  public RecyclableBufferedInputStream(@NonNull InputStream in, @NonNull ArrayPool byteArrayPool) {
+    this(in, byteArrayPool, ArrayPool.STANDARD_BUFFER_SIZE_BYTES);
   }
 
-  // Visible for testing
-  RecyclableBufferedInputStream(InputStream in, ByteArrayPool byteArrayPool,
+  @VisibleForTesting
+  RecyclableBufferedInputStream(@NonNull InputStream in, @NonNull ArrayPool byteArrayPool,
       int bufferSize) {
     super(in);
     this.byteArrayPool = byteArrayPool;
-    buf = byteArrayPool.get(bufferSize);
+    buf = byteArrayPool.get(bufferSize, byte[].class);
   }
 
   /**
@@ -105,6 +106,8 @@ public class RecyclableBufferedInputStream extends FilterInputStream {
    * <p>Subsequent calls to {@link #mark(int)} will be obeyed and may cause the buffer size to
    * increase.
    */
+  // Public API.
+  @SuppressWarnings("WeakerAccess")
   public synchronized void fixMarkLimit() {
     marklimit = buf.length;
   }
@@ -161,7 +164,7 @@ public class RecyclableBufferedInputStream extends FilterInputStream {
       if (newLength > marklimit) {
         newLength = marklimit;
       }
-      byte[] newbuf = byteArrayPool.get(newLength);
+      byte[] newbuf = byteArrayPool.get(newLength, byte[].class);
       System.arraycopy(localBuf, 0, newbuf, 0, localBuf.length);
       byte[] oldbuf = localBuf;
       // Reassign buf, which will invalidate any local references
@@ -267,7 +270,8 @@ public class RecyclableBufferedInputStream extends FilterInputStream {
    *                                   occurs.
    */
   @Override
-  public synchronized int read(byte[] buffer, int offset, int byteCount) throws IOException {
+  public synchronized int read(@NonNull byte[] buffer, int offset, int byteCount)
+      throws IOException {
     // Use local ref since buf may be invalidated by an unsynchronized close()
     byte[] localBuf = buf;
     if (localBuf == null) {
@@ -357,31 +361,32 @@ public class RecyclableBufferedInputStream extends FilterInputStream {
    * Skips {@code byteCount} bytes in this stream. Subsequent calls to {@link #read} will not return
    * these bytes unless {@link #reset} is used.
    *
-   * @param byteCount the number of bytes to skip. {@link #skip} does nothing and returns 0 if
+   * @param byteCount the number of bytes to skip. This method does nothing and returns 0 if
    *                  {@code byteCount} is less than zero.
    * @return the number of bytes actually skipped.
    * @throws IOException if this stream is closed or another IOException occurs.
    */
   @Override
   public synchronized long skip(long byteCount) throws IOException {
-    // Use local refs since buf and in may be invalidated by an unsynchronized close()
-    byte[] localBuf = buf;
-    InputStream localIn = in;
-    if (localBuf == null) {
-      throw streamClosed();
-    }
     if (byteCount < 1) {
       return 0;
     }
+    // Use local refs since buf and in may be invalidated by an unsynchronized close()
+    byte[] localBuf = buf;
+    if (localBuf == null) {
+      throw streamClosed();
+    }
+    InputStream localIn = in;
     if (localIn == null) {
       throw streamClosed();
     }
 
     if (count - pos >= byteCount) {
-      pos += byteCount;
+      pos = (int) (pos + byteCount);
       return byteCount;
     }
-    long read = count - pos;
+    // See http://errorprone.info/bugpattern/IntLongMath.
+    long read = (long) count - pos;
     pos = count;
 
     if (markpos != -1 && byteCount <= marklimit) {
@@ -389,7 +394,8 @@ public class RecyclableBufferedInputStream extends FilterInputStream {
         return read;
       }
       if (count - pos >= byteCount - read) {
-        pos += byteCount - read;
+        // See http://errorprone.info/bugpattern/NarrowingCompoundAssignment.
+        pos = (int) (pos + byteCount - read);
         return byteCount;
       }
       // Couldn't get all the bytes, skip what we read.
@@ -404,10 +410,10 @@ public class RecyclableBufferedInputStream extends FilterInputStream {
    * An exception thrown when a mark can no longer be obeyed because the underlying buffer size is
    * smaller than the amount of data read after the mark position.
    */
-  public static class InvalidMarkException extends IOException {
+  static class InvalidMarkException extends IOException {
     private static final long serialVersionUID = -4338378848813561757L;
 
-    public InvalidMarkException(String detailMessage) {
+    InvalidMarkException(String detailMessage) {
       super(detailMessage);
     }
   }

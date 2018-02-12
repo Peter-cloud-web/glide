@@ -1,8 +1,12 @@
 package com.bumptech.glide.load.resource.bitmap;
 
+import com.bumptech.glide.util.Synthetic;
+
 /**
  * Indicates the algorithm to use when downsampling images.
  */
+// Public API.
+@SuppressWarnings("WeakerAccess")
 public abstract class DownsampleStrategy {
 
   /**
@@ -11,12 +15,13 @@ public abstract class DownsampleStrategy {
    * requested size.
    *
    * <p>This method will upscale if the requested width and height are greater than the source width
-   * and height. To avoid upscaling, use {@link #AT_LEAST} or {@link #AT_MOST}.
+   * and height. To avoid upscaling, use {@link #AT_LEAST}, {@link #AT_MOST} or
+   * {@link #CENTER_INSIDE}.
    *
    * <p>On pre-KitKat devices, this is equivalent to {@link #AT_MOST} because only power of
    * two downsampling can be used.
    */
-  public static final DownsampleStrategy CENTER_INSIDE = new CenterInside();
+  public static final DownsampleStrategy FIT_CENTER = new FitCenter();
 
   /**
    * Scales, maintaining the original aspect ratio, so that one of the image's dimensions is
@@ -24,7 +29,8 @@ public abstract class DownsampleStrategy {
    * the requested size.
    *
    * <p>This method will upscale if the requested width and height are greater than the source width
-   * and height. To avoid upscaling, use {@link #AT_LEAST} or {@link #AT_MOST}.
+   * and height. To avoid upscaling, use {@link #AT_LEAST}, {@link #AT_MOST},
+   * or {@link #CENTER_INSIDE}.
    *
    * <p>On pre-KitKat devices, this is equivalent to {@link #AT_LEAST} because only power of
    * two downsampling can be used.
@@ -44,14 +50,23 @@ public abstract class DownsampleStrategy {
   public static final DownsampleStrategy AT_MOST = new AtMost();
 
   /**
+   * Returns the original image if it is smaller than the target, otherwise it will be downscaled
+   * maintaining its original aspect ratio, so that one of the image's dimensions is exactly equal
+   * to the requested size and the other is less or equal than the requested size.
+   *
+   * <p>This method will not upscale.</p>
+   */
+  public static final DownsampleStrategy CENTER_INSIDE = new CenterInside();
+
+  /**
    * Performs no downsampling or scaling.
    */
   public static final DownsampleStrategy NONE = new None();
 
   /**
-   * Default strategy, currently {@link #AT_LEAST}.
+   * Default strategy, currently {@link #CENTER_OUTSIDE}.
    */
-  public static final DownsampleStrategy DEFAULT = AT_LEAST;
+  public static final DownsampleStrategy DEFAULT = CENTER_OUTSIDE;
 
   /**
    * Returns a float (0, +infinity) indicating a scale factor to apply to the source
@@ -86,7 +101,10 @@ public abstract class DownsampleStrategy {
   public abstract SampleSizeRounding getSampleSizeRounding(int sourceWidth, int sourceHeight,
       int requestedWidth, int requestedHeight);
 
-  private static class CenterInside extends DownsampleStrategy {
+  private static class FitCenter extends DownsampleStrategy {
+
+    @Synthetic
+    FitCenter() { }
 
     @Override
     public float getScaleFactor(int sourceWidth, int sourceHeight, int requestedWidth,
@@ -104,7 +122,11 @@ public abstract class DownsampleStrategy {
   }
 
   private static class CenterOutside extends DownsampleStrategy {
-     @Override
+
+    @Synthetic
+    CenterOutside() { }
+
+    @Override
     public float getScaleFactor(int sourceWidth, int sourceHeight, int requestedWidth,
         int requestedHeight) {
       float widthPercentage = requestedWidth / (float) sourceWidth;
@@ -121,6 +143,9 @@ public abstract class DownsampleStrategy {
 
   private static class AtLeast extends DownsampleStrategy {
 
+    @Synthetic
+    AtLeast() { }
+
     @Override
     public float getScaleFactor(int sourceWidth, int sourceHeight, int requestedWidth,
         int requestedHeight) {
@@ -136,6 +161,10 @@ public abstract class DownsampleStrategy {
   }
 
   private static class AtMost extends DownsampleStrategy {
+
+    @Synthetic
+    AtMost() { }
+
     @Override
     public float getScaleFactor(int sourceWidth, int sourceHeight, int requestedWidth,
         int requestedHeight) {
@@ -155,10 +184,34 @@ public abstract class DownsampleStrategy {
   }
 
   private static class None extends DownsampleStrategy {
-     @Override
+
+    @Synthetic
+    None() { }
+
+    @Override
     public float getScaleFactor(int sourceWidth, int sourceHeight, int requestedWidth,
         int requestedHeight) {
       return 1f;
+    }
+
+    @Override
+    public SampleSizeRounding getSampleSizeRounding(int sourceWidth, int sourceHeight,
+        int requestedWidth, int requestedHeight) {
+      return SampleSizeRounding.QUALITY;
+    }
+  }
+
+  private static class CenterInside extends DownsampleStrategy {
+
+    @Synthetic
+    CenterInside() { }
+
+    @Override
+    public float getScaleFactor(int sourceWidth, int sourceHeight, int requestedWidth,
+        int requestedHeight) {
+
+      return Math.min(1.f,
+          FIT_CENTER.getScaleFactor(sourceWidth, sourceHeight, requestedWidth, requestedHeight));
     }
 
     @Override

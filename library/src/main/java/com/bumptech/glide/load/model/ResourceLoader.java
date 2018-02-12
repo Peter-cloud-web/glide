@@ -1,15 +1,14 @@
 package com.bumptech.glide.load.model;
 
 import android.content.ContentResolver;
-import android.content.Context;
+import android.content.res.AssetFileDescriptor;
 import android.content.res.Resources;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.util.Log;
-
 import com.bumptech.glide.load.Options;
-
 import java.io.InputStream;
 
 /**
@@ -23,18 +22,16 @@ public class ResourceLoader<Data> implements ModelLoader<Integer, Data> {
   private final ModelLoader<Uri, Data> uriLoader;
   private final Resources resources;
 
-  public ResourceLoader(Context context, ModelLoader<Uri, Data> uriLoader) {
-    this(context.getResources(), uriLoader);
-  }
-
+  // Public API.
+  @SuppressWarnings("WeakerAccess")
   public ResourceLoader(Resources resources, ModelLoader<Uri, Data> uriLoader) {
     this.resources = resources;
     this.uriLoader = uriLoader;
   }
 
   @Override
-  public LoadData<Data> buildLoadData(Integer model, int width, int height, Options options) {
-
+  public LoadData<Data> buildLoadData(@NonNull Integer model, int width, int height,
+      @NonNull Options options) {
     Uri uri = getResourceUri(model);
     return uri == null ? null : uriLoader.buildLoadData(uri, width, height, options);
   }
@@ -55,7 +52,7 @@ public class ResourceLoader<Data> implements ModelLoader<Integer, Data> {
   }
 
   @Override
-  public boolean handles(Integer model) {
+  public boolean handles(@NonNull Integer model) {
     // TODO: check that this is in fact a resource id.
     return true;
   }
@@ -65,10 +62,16 @@ public class ResourceLoader<Data> implements ModelLoader<Integer, Data> {
    */
   public static class StreamFactory implements ModelLoaderFactory<Integer, InputStream> {
 
+    private final Resources resources;
+
+    public StreamFactory(Resources resources) {
+      this.resources = resources;
+    }
+
+    @NonNull
     @Override
-    public ModelLoader<Integer, InputStream> build(Context context,
-        MultiModelLoaderFactory multiFactory) {
-      return new ResourceLoader<>(context, multiFactory.build(Uri.class, InputStream.class));
+    public ModelLoader<Integer, InputStream> build(MultiModelLoaderFactory multiFactory) {
+      return new ResourceLoader<>(resources, multiFactory.build(Uri.class, InputStream.class));
     }
 
     @Override
@@ -83,11 +86,64 @@ public class ResourceLoader<Data> implements ModelLoader<Integer, Data> {
   public static class FileDescriptorFactory
       implements ModelLoaderFactory<Integer, ParcelFileDescriptor> {
 
+    private final Resources resources;
+
+    public FileDescriptorFactory(Resources resources) {
+      this.resources = resources;
+    }
+
+    @NonNull
     @Override
-    public ModelLoader<Integer, ParcelFileDescriptor> build(Context context,
-        MultiModelLoaderFactory multiFactory) {
-      return new ResourceLoader<>(context,
-          multiFactory.build(Uri.class, ParcelFileDescriptor.class));
+    public ModelLoader<Integer, ParcelFileDescriptor> build(MultiModelLoaderFactory multiFactory) {
+      return new ResourceLoader<>(
+          resources, multiFactory.build(Uri.class, ParcelFileDescriptor.class));
+    }
+
+    @Override
+    public void teardown() {
+      // Do nothing.
+    }
+  }
+
+  /**
+   * Loads {@link AssetFileDescriptor}s from resource ids.
+   */
+  public static final class AssetFileDescriptorFactory
+      implements ModelLoaderFactory<Integer, AssetFileDescriptor> {
+
+    private final Resources resources;
+
+    public AssetFileDescriptorFactory(Resources resources) {
+      this.resources = resources;
+    }
+
+    @Override
+    public ModelLoader<Integer, AssetFileDescriptor> build(MultiModelLoaderFactory multiFactory) {
+      return new ResourceLoader<>(
+          resources, multiFactory.build(Uri.class, AssetFileDescriptor.class));
+    }
+
+    @Override
+    public void teardown() {
+      // Do nothing.
+    }
+  }
+
+  /**
+   * Factory for loading resource {@link Uri}s from Android resource ids.
+   */
+  public static class UriFactory implements ModelLoaderFactory<Integer, Uri> {
+
+    private final Resources resources;
+
+    public UriFactory(Resources resources) {
+      this.resources = resources;
+    }
+
+    @NonNull
+    @Override
+    public ModelLoader<Integer, Uri> build(MultiModelLoaderFactory multiFactory) {
+      return new ResourceLoader<>(resources, UnitModelLoader.<Uri>getInstance());
     }
 
     @Override

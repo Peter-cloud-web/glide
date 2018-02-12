@@ -1,10 +1,6 @@
 package com.bumptech.glide.request.transition;
 
-import android.content.Context;
 import android.graphics.drawable.Drawable;
-import android.view.animation.AlphaAnimation;
-import android.view.animation.Animation;
-
 import com.bumptech.glide.load.DataSource;
 
 /**
@@ -15,80 +11,72 @@ import com.bumptech.glide.load.DataSource;
  * <p> Resources are usually loaded from the memory cache just before the user can see the view, for
  * example when the user changes screens or scrolls back and forth in a list. In those cases the
  * user typically does not expect to see a transition. As a result, when the resource is loaded from
- * the memory cache this factory produces an {@link NoTransition}. </p>
+ * the memory cache this factory produces an {@link NoTransition}.
  */
+// Public API.
+@SuppressWarnings("WeakerAccess")
 public class DrawableCrossFadeFactory implements TransitionFactory<Drawable> {
-  private static final int DEFAULT_DURATION_MS = 300;
-  private final ViewAnimationFactory<Drawable> viewAnimationFactory;
   private final int duration;
-  private DrawableCrossFadeTransition firstResourceTransition;
-  private DrawableCrossFadeTransition secondResourceTransition;
+  private final boolean isCrossFadeEnabled;
+  private DrawableCrossFadeTransition resourceTransition;
 
-  public DrawableCrossFadeFactory() {
-    this(DEFAULT_DURATION_MS);
-  }
-
-  public DrawableCrossFadeFactory(int duration) {
-    this(new ViewAnimationFactory<Drawable>(
-        new DefaultViewTransitionAnimationFactory(duration)), duration);
-  }
-
-  public DrawableCrossFadeFactory(int defaultAnimationId, int duration) {
-    this(new ViewAnimationFactory<Drawable>(defaultAnimationId), duration);
-  }
-
-  public DrawableCrossFadeFactory(Animation defaultAnimation, int duration) {
-    this(new ViewAnimationFactory<Drawable>(defaultAnimation), duration);
-  }
-
-  DrawableCrossFadeFactory(ViewAnimationFactory<Drawable> viewAnimationFactory, int duration) {
-    this.viewAnimationFactory = viewAnimationFactory;
+  protected DrawableCrossFadeFactory(int duration, boolean isCrossFadeEnabled) {
     this.duration = duration;
+    this.isCrossFadeEnabled = isCrossFadeEnabled;
   }
 
   @Override
   public Transition<Drawable> build(DataSource dataSource, boolean isFirstResource) {
-    if (dataSource == DataSource.MEMORY_CACHE) {
-      return NoTransition.get();
-    } else if (isFirstResource) {
-      return getFirstResourceTransition(dataSource);
-    } else {
-      return getSecondResourceTransition(dataSource);
-    }
+    return dataSource == DataSource.MEMORY_CACHE
+        ? NoTransition.<Drawable>get() : getResourceTransition();
   }
 
-  private Transition<Drawable> getFirstResourceTransition(DataSource dataSource) {
-      if (firstResourceTransition == null) {
-          Transition<Drawable> defaultAnimation =
-              viewAnimationFactory.build(dataSource, true /*isFirstResource*/);
-          firstResourceTransition = new DrawableCrossFadeTransition(defaultAnimation, duration);
+  private Transition<Drawable> getResourceTransition() {
+      if (resourceTransition == null) {
+        resourceTransition = new DrawableCrossFadeTransition(duration, isCrossFadeEnabled);
       }
-      return firstResourceTransition;
+      return resourceTransition;
   }
 
-  private Transition<Drawable> getSecondResourceTransition(DataSource dataSource) {
-      if (secondResourceTransition == null) {
-          Transition<Drawable> defaultAnimation =
-              viewAnimationFactory.build(dataSource, false /*isFirstResource*/);
-          secondResourceTransition = new DrawableCrossFadeTransition(defaultAnimation, duration);
-      }
-      return secondResourceTransition;
-  }
+  /**
+   * A Builder for {@link DrawableCrossFadeFactory}.
+   */
+  @SuppressWarnings("unused")
+  public static class Builder {
+    private static final int DEFAULT_DURATION_MS = 300;
+    private final int durationMillis;
+    private boolean isCrossFadeEnabled;
 
-  private static class DefaultViewTransitionAnimationFactory implements ViewTransition
-      .ViewTransitionAnimationFactory {
-
-    private final int duration;
-
-    DefaultViewTransitionAnimationFactory(int duration) {
-      this.duration = duration;
+    public Builder() {
+      this(DEFAULT_DURATION_MS);
     }
 
-    @Override
-    public Animation build(Context context) {
-      AlphaAnimation animation = new AlphaAnimation(0f, 1f);
-      animation.setDuration(duration);
-      return animation;
+    /**
+     * @param durationMillis The duration of the cross fade animation in milliseconds.
+     */
+    public Builder(int durationMillis) {
+      this.durationMillis = durationMillis;
+    }
+
+    /**
+     * Enables or disables animating the alpha of the {@link Drawable} the cross fade will animate
+     * from.
+     *
+     * <p>Defaults to {@code false}.
+     *
+     * @param isCrossFadeEnabled If {@code true} the previous {@link Drawable}'s alpha will be
+     *     animated from 100 to 0 while the new {@link Drawable}'s alpha is
+     *     animated from 0 to 100. Otherwise the previous {@link Drawable}'s
+     *     alpha will remain at 100 throughout the animation. See
+     *     {@link android.graphics.drawable.TransitionDrawable#setCrossFadeEnabled(boolean)}
+     */
+    public Builder setCrossFadeEnabled(boolean isCrossFadeEnabled) {
+      this.isCrossFadeEnabled = isCrossFadeEnabled;
+      return this;
+    }
+
+    public DrawableCrossFadeFactory build() {
+      return new DrawableCrossFadeFactory(durationMillis, isCrossFadeEnabled);
     }
   }
 }

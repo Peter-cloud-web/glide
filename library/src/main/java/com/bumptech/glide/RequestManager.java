@@ -7,15 +7,14 @@ import static com.bumptech.glide.request.RequestOptions.skipMemoryCacheOf;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.support.annotation.CheckResult;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.view.View;
-
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
-import com.bumptech.glide.load.resource.bitmap.BitmapTransitionOptions;
-import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions;
 import com.bumptech.glide.load.resource.gif.GifDrawable;
 import com.bumptech.glide.manager.ConnectivityMonitor;
 import com.bumptech.glide.manager.ConnectivityMonitorFactory;
@@ -24,15 +23,15 @@ import com.bumptech.glide.manager.LifecycleListener;
 import com.bumptech.glide.manager.RequestManagerTreeNode;
 import com.bumptech.glide.manager.RequestTracker;
 import com.bumptech.glide.manager.TargetTracker;
-import com.bumptech.glide.request.BaseRequestOptions;
 import com.bumptech.glide.request.Request;
 import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.target.ViewTarget;
 import com.bumptech.glide.request.transition.Transition;
+import com.bumptech.glide.util.Synthetic;
 import com.bumptech.glide.util.Util;
-
 import java.io.File;
+import java.net.URL;
 
 /**
  * A class for managing and starting requests for Glide. Can use activity, fragment and connectivity
@@ -46,15 +45,17 @@ import java.io.File;
  * @see Glide#with(android.support.v4.app.Fragment)
  * @see Glide#with(Context)
  */
-public class RequestManager implements LifecycleListener {
+public class RequestManager implements LifecycleListener,
+    ModelTypes<RequestBuilder<Drawable>> {
   private static final RequestOptions DECODE_TYPE_BITMAP = decodeTypeOf(Bitmap.class).lock();
   private static final RequestOptions DECODE_TYPE_GIF = decodeTypeOf(GifDrawable.class).lock();
   private static final RequestOptions DOWNLOAD_ONLY_OPTIONS =
       diskCacheStrategyOf(DiskCacheStrategy.DATA).priority(Priority.LOW)
           .skipMemoryCache(true);
 
-  private final GlideContext context;
-  private final Lifecycle lifecycle;
+  protected final Glide glide;
+  protected final Context context;
+  @Synthetic final Lifecycle lifecycle;
   private final RequestTracker requestTracker;
   private final RequestManagerTreeNode treeNode;
   private final TargetTracker targetTracker = new TargetTracker();
@@ -67,24 +68,39 @@ public class RequestManager implements LifecycleListener {
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
   private final ConnectivityMonitor connectivityMonitor;
 
-  @NonNull
-  private BaseRequestOptions<?> defaultRequestOptions;
-  @NonNull
-  private BaseRequestOptions<?> requestOptions;
+  private RequestOptions requestOptions;
 
-  public RequestManager(Context context, Lifecycle lifecycle, RequestManagerTreeNode treeNode) {
-    this(context, lifecycle, treeNode, new RequestTracker(), new ConnectivityMonitorFactory());
+  public RequestManager(
+      @NonNull Glide glide, @NonNull Lifecycle lifecycle,
+      @NonNull RequestManagerTreeNode treeNode, @NonNull Context context) {
+    this(
+        glide,
+        lifecycle,
+        treeNode,
+        new RequestTracker(),
+        glide.getConnectivityMonitorFactory(),
+        context);
   }
 
-  RequestManager(Context context, final Lifecycle lifecycle, RequestManagerTreeNode treeNode,
-      RequestTracker requestTracker, ConnectivityMonitorFactory factory) {
-    this.context = Glide.get(context).getGlideContext();
+  // Our usage is safe here.
+  @SuppressWarnings("PMD.ConstructorCallsOverridableMethod")
+  RequestManager(
+      Glide glide,
+      Lifecycle lifecycle,
+      RequestManagerTreeNode treeNode,
+      RequestTracker requestTracker,
+      ConnectivityMonitorFactory factory,
+      Context context) {
+    this.glide = glide;
     this.lifecycle = lifecycle;
     this.treeNode = treeNode;
     this.requestTracker = requestTracker;
+    this.context = context;
 
     connectivityMonitor =
-        factory.build(context, new RequestManagerConnectivityListener(requestTracker));
+        factory.build(
+            context.getApplicationContext(),
+            new RequestManagerConnectivityListener(requestTracker));
 
     // If we're the application level request manager, we may be created on a background thread.
     // In that case we cannot risk synchronously pausing or resuming requests, so we hack around the
@@ -97,10 +113,17 @@ public class RequestManager implements LifecycleListener {
     }
     lifecycle.addListener(connectivityMonitor);
 
-    defaultRequestOptions = this.context.getDefaultRequestOptions();
-    requestOptions = defaultRequestOptions;
+    setRequestOptions(glide.getGlideContext().getDefaultRequestOptions());
 
-    Glide.get(context).registerRequestManager(this);
+    glide.registerRequestManager(this);
+  }
+
+  protected void setRequestOptions(@NonNull RequestOptions toSet) {
+    requestOptions = toSet.clone().autoClone();
+  }
+
+  private void updateRequestOptions(@NonNull RequestOptions toUpdate) {
+    requestOptions = requestOptions.apply(toUpdate);
   }
 
   /**
@@ -117,14 +140,13 @@ public class RequestManager implements LifecycleListener {
    *
    * <p>The modified options will only be applied to loads started after this method is called.
    *
-   * @see RequestBuilder#apply(BaseRequestOptions)
+   * @see RequestBuilder#apply(RequestOptions)
    *
    * @return This request manager.
    */
-  public RequestManager applyDefaultRequestOptions(RequestOptions requestOptions) {
-    BaseRequestOptions<?> toMutate = this.requestOptions == defaultRequestOptions
-        ? this.requestOptions.clone() : this.defaultRequestOptions;
-    this.requestOptions = toMutate.apply(requestOptions);
+  @NonNull
+  public RequestManager applyDefaultRequestOptions(@NonNull RequestOptions requestOptions) {
+    updateRequestOptions(requestOptions);
     return this;
   }
 
@@ -133,9 +155,8 @@ public class RequestManager implements LifecycleListener {
    * with the given {@link RequestOptions}.
    *
    * <p>The {@link RequestOptions} provided here replace those that have been previously provided
-   * via {@link GlideBuilder#setDefaultRequestOptions(RequestOptions)}, {@link
-   * #setDefaultRequestOptions(RequestOptions)} and {@link
-   * #applyDefaultRequestOptions(RequestOptions)}.
+   * via this method, {@link GlideBuilder#setDefaultRequestOptions(RequestOptions)}, and
+   * {@link #applyDefaultRequestOptions(RequestOptions)}.
    *
    * <p>Subsequent calls to {@link #applyDefaultRequestOptions(RequestOptions)} will not mutate
    * the {@link RequestOptions} provided here. Instead the manager will create a clone of these
@@ -145,24 +166,32 @@ public class RequestManager implements LifecycleListener {
    *
    * @return This request manager.
    */
-  public RequestManager setDefaultRequestOptions(RequestOptions requestOptions) {
-    this.defaultRequestOptions = requestOptions;
-    this.requestOptions = requestOptions;
+  @NonNull
+  public RequestManager setDefaultRequestOptions(@NonNull RequestOptions requestOptions) {
+    setRequestOptions(requestOptions);
     return this;
   }
 
   /**
    * @see android.content.ComponentCallbacks2#onTrimMemory(int)
+   *
+   * @deprecated This method is called automatically by Glide's internals and shouldn't be called
+   * externally.
    */
+  @Deprecated
   public void onTrimMemory(int level) {
-    context.onTrimMemory(level);
+    glide.onTrimMemory(level);
   }
 
   /**
    * @see android.content.ComponentCallbacks2#onLowMemory()
+   *
+   * @deprecated This method is called automatically by Glide's internals and shouldn't be called
+   * externally.
    */
+  @Deprecated
   public void onLowMemory() {
-    context.onLowMemory();
+    glide.onLowMemory();
   }
 
   /**
@@ -179,12 +208,37 @@ public class RequestManager implements LifecycleListener {
   /**
    * Cancels any in progress loads, but does not clear resources of completed loads.
    *
+   * <p>Note #{@link #resumeRequests()} must be called for any requests made before or while the
+   * manager is paused to complete. RequestManagers attached to Fragments and Activities
+   * automatically resume onStart().
+   *
    * @see #isPaused()
    * @see #resumeRequests()
    */
   public void pauseRequests() {
     Util.assertMainThread();
     requestTracker.pauseRequests();
+  }
+
+  /**
+   * Cancels any in progress loads and clears resources of completed loads.
+   *
+   * <p>Note #{@link #resumeRequests()} must be called for any requests made before or while the
+   * manager is paused to complete. RequestManagers attached to Fragments and Activities
+   * automatically resume onStart().
+   *
+   * <p>This will release the memory used by completed bitmaps but leaves them in any configured
+   * caches. When an #{@link android.app.Activity} receives #{@link
+   * android.app.Activity#onTrimMemory(int)} at a level of #{@link
+   * android.content.ComponentCallbacks2#TRIM_MEMORY_BACKGROUND} this is desirable in order to keep
+   * your process alive longer.
+   *
+   * @see #isPaused()
+   * @see #resumeRequests()
+   */
+  public void pauseAllRequests() {
+    Util.assertMainThread();
+    requestTracker.pauseAllRequests();
   }
 
   /**
@@ -201,6 +255,8 @@ public class RequestManager implements LifecycleListener {
    * <p>Note, on pre-Jelly Bean MR1 calling pause on a Fragment will not cause child fragments to
    * pause, in this case either call pause on the Activity or use a support Fragment.
    */
+  // Public API.
+  @SuppressWarnings({"WeakerAccess", "unused"})
   public void pauseRequestsRecursive() {
     Util.assertMainThread();
     pauseRequests();
@@ -225,6 +281,8 @@ public class RequestManager implements LifecycleListener {
    * descendant to this manager based on the Activity/Fragment hierarchy. The hierarchical semantics
    * are identical as for {@link #pauseRequestsRecursive()}.
    */
+  // Public API.
+  @SuppressWarnings("unused")
   public void resumeRequestsRecursive() {
     Util.assertMainThread();
     resumeRequests();
@@ -269,7 +327,7 @@ public class RequestManager implements LifecycleListener {
     lifecycle.removeListener(this);
     lifecycle.removeListener(connectivityMonitor);
     mainHandler.removeCallbacks(addSelfToLifecycle);
-    Glide.get(context).unregisterRequestManager(this);
+    glide.unregisterRequestManager(this);
   }
 
   /**
@@ -278,8 +336,10 @@ public class RequestManager implements LifecycleListener {
    *
    * @return A new request builder for loading a {@link android.graphics.Bitmap}
    */
+  @NonNull
+  @CheckResult
   public RequestBuilder<Bitmap> asBitmap() {
-    return as(Bitmap.class).transition(new BitmapTransitionOptions()).apply(DECODE_TYPE_BITMAP);
+    return as(Bitmap.class).apply(DECODE_TYPE_BITMAP);
   }
 
   /**
@@ -295,8 +355,10 @@ public class RequestManager implements LifecycleListener {
    * @return A new request builder for loading a
    * {@link com.bumptech.glide.load.resource.gif.GifDrawable}.
    */
+  @NonNull
+  @CheckResult
   public RequestBuilder<GifDrawable> asGif() {
-    return as(GifDrawable.class).transition(new DrawableTransitionOptions()).apply(DECODE_TYPE_GIF);
+    return as(GifDrawable.class).apply(DECODE_TYPE_GIF);
   }
 
   /**
@@ -309,8 +371,109 @@ public class RequestManager implements LifecycleListener {
    *
    * @return A new request builder for loading a {@link Drawable}.
    */
+  @NonNull
+  @CheckResult
   public RequestBuilder<Drawable> asDrawable() {
-    return as(Drawable.class).transition(new DrawableTransitionOptions());
+    return as(Drawable.class);
+  }
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(Bitmap)}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @NonNull
+  @CheckResult
+  @Override
+  public RequestBuilder<Drawable> load(@Nullable Bitmap bitmap) {
+    return asDrawable().load(bitmap);
+  }
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(Drawable)}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @NonNull
+  @CheckResult
+  @Override
+  public RequestBuilder<Drawable> load(@Nullable Drawable drawable) {
+    return asDrawable().load(drawable);
+  }
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(String)}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @NonNull
+  @CheckResult
+  @Override
+  public RequestBuilder<Drawable> load(@Nullable String string) {
+    return asDrawable().load(string);
+  }
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(Uri)}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @NonNull
+  @CheckResult
+  @Override
+  public RequestBuilder<Drawable> load(@Nullable Uri uri) {
+    return asDrawable().load(uri);
+  }
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(File)}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @NonNull
+  @CheckResult
+  @Override
+  public RequestBuilder<Drawable> load(@Nullable File file) {
+    return asDrawable().load(file);
+  }
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(Integer)}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @SuppressWarnings("deprecation")
+  @NonNull
+  @CheckResult
+  @Override
+  public RequestBuilder<Drawable> load(@Nullable Integer resourceId) {
+    return asDrawable().load(resourceId);
+  }
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(URL)}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @SuppressWarnings("deprecation")
+  @CheckResult
+  @Override
+  @Deprecated
+  public RequestBuilder<Drawable> load(@Nullable URL url) {
+    return asDrawable().load(url);
+  }
+
+
+  /**
+   * Equivalent to calling {@link #asDrawable()} and then {@link RequestBuilder#load(byte[])}.
+   *
+   * @return A new request builder for loading a {@link Drawable} using the given model.
+   */
+  @NonNull
+  @CheckResult
+  @Override
+  public RequestBuilder<Drawable> load(@Nullable byte[] model) {
+    return asDrawable().load(model);
   }
 
   /**
@@ -319,6 +482,9 @@ public class RequestManager implements LifecycleListener {
    *
    * @return A new request builder for loading a {@link Drawable} using the given model.
    */
+  @NonNull
+  @CheckResult
+  @Override
   public RequestBuilder<Drawable> load(@Nullable Object model) {
     return asDrawable().load(model);
   }
@@ -334,6 +500,8 @@ public class RequestManager implements LifecycleListener {
    *
    * @return A new request builder for downloading content to cache and returning the cache File.
    */
+  @NonNull
+  @CheckResult
   public RequestBuilder<File> downloadOnly() {
     return as(File.class).apply(DOWNLOAD_ONLY_OPTIONS);
   }
@@ -344,6 +512,8 @@ public class RequestManager implements LifecycleListener {
    *
    * @return A new request builder for loading a {@link Drawable} using the given model.
    */
+  @NonNull
+  @CheckResult
   public RequestBuilder<File> download(@Nullable Object model) {
     return downloadOnly().load(model);
   }
@@ -357,6 +527,8 @@ public class RequestManager implements LifecycleListener {
    *
    * @return A new request builder for obtaining File paths to content.
    */
+  @NonNull
+  @CheckResult
   public RequestBuilder<File> asFile() {
     return as(File.class).apply(skipMemoryCacheOf(true));
   }
@@ -369,8 +541,11 @@ public class RequestManager implements LifecycleListener {
    * @param resourceClass The resource to decode.
    * @return A new request builder for loading the given resource class.
    */
-  public <ResourceType> RequestBuilder<ResourceType> as(Class<ResourceType> resourceClass) {
-    return new RequestBuilder<>(context, this, resourceClass);
+  @NonNull
+  @CheckResult
+  public <ResourceType> RequestBuilder<ResourceType> as(
+      @NonNull Class<ResourceType> resourceClass) {
+    return new RequestBuilder<>(glide, this, resourceClass, context);
   }
 
   /**
@@ -383,9 +558,9 @@ public class RequestManager implements LifecycleListener {
    * @param view The view to cancel loads and free resources for.
    * @throws IllegalArgumentException if an object other than Glide's metadata is put as the view's
    *                                  tag.
-   * @see #clear(Target).
+   * @see #clear(Target)
    */
-  public void clear(View view) {
+  public void clear(@NonNull View view) {
     clear(new ClearTarget(view));
   }
 
@@ -412,14 +587,33 @@ public class RequestManager implements LifecycleListener {
     }
   }
 
-  private void untrackOrDelegate(Target<?> target) {
+  private void untrackOrDelegate(@NonNull Target<?> target) {
     boolean isOwnedByUs = untrack(target);
-    if (!isOwnedByUs) {
-      Glide.get(context).removeFromManagers(target);
+    // We'll end up here if the Target was cleared after the RequestManager that started the request
+    // is destroyed. That can happen for at least two reasons:
+    // 1. We call clear() on a background thread using something other than Application Context
+    // RequestManager.
+    // 2. The caller retains a reference to the RequestManager after the corresponding Activity or
+    // Fragment is destroyed, starts a load with it, and then clears that load with a different
+    // RequestManager. Callers seem especially likely to do this in retained Fragments (#2262).
+    //
+    // #1 is always an error. At best the caller is leaking memory briefly in something like an
+    // AsyncTask. At worst the caller is leaking an Activity or Fragment for a sustained period of
+    // time if they do something like reference the Activity RequestManager in a long lived
+    // background thread or task.
+    //
+    // #2 is always an error. Callers shouldn't be starting new loads using RequestManagers after
+    // the corresponding Activity or Fragment is destroyed because retaining any reference to the
+    // RequestManager leaks memory. It's possible that there's some brief period of time during or
+    // immediately after onDestroy where this is reasonable, but I can't think of why.
+    if (!isOwnedByUs && !glide.removeFromManagers(target) && target.getRequest() != null) {
+      Request request = target.getRequest();
+      target.setRequest(null);
+      request.clear();
     }
   }
 
-  boolean untrack(Target<?> target) {
+  boolean untrack(@NonNull Target<?> target) {
     Request request = target.getRequest();
     // If the Target doesn't have a request, it's already been cleared.
     if (request == null) {
@@ -435,13 +629,18 @@ public class RequestManager implements LifecycleListener {
     }
   }
 
-  void track(Target<?> target, Request request) {
+  void track(@NonNull Target<?> target, @NonNull Request request) {
     targetTracker.track(target);
     requestTracker.runRequest(request);
   }
 
-  BaseRequestOptions<?> getDefaultRequestOptions() {
+  RequestOptions getDefaultRequestOptions() {
     return requestOptions;
+  }
+
+  @NonNull
+  <T> TransitionOptions<?, T> getDefaultTransitionOptions(Class<T> transcodeClass) {
+    return glide.getGlideContext().getDefaultTransitionOptions(transcodeClass);
   }
 
   @Override
@@ -453,7 +652,7 @@ public class RequestManager implements LifecycleListener {
       .ConnectivityListener {
     private final RequestTracker requestTracker;
 
-    public RequestManagerConnectivityListener(RequestTracker requestTracker) {
+    RequestManagerConnectivityListener(@NonNull RequestTracker requestTracker) {
       this.requestTracker = requestTracker;
     }
 
@@ -467,12 +666,13 @@ public class RequestManager implements LifecycleListener {
 
   private static class ClearTarget extends ViewTarget<View, Object> {
 
-    public ClearTarget(View view) {
+    ClearTarget(@NonNull View view) {
       super(view);
     }
 
     @Override
-    public void onResourceReady(Object resource, Transition<? super Object> transition) {
+    public void onResourceReady(@NonNull Object resource,
+        @Nullable Transition<? super Object> transition) {
       // Do nothing.
     }
   }

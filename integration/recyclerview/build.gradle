@@ -1,24 +1,18 @@
 apply plugin: 'com.android.library'
 
-repositories {
-    mavenCentral()
-}
-
 dependencies {
-    compile project(':glide')
-    compile "com.android.support:recyclerview-v7:${SUPPORT_V7_VERSION}"
-    compile "com.android.support:support-v4:${SUPPORT_V4_VERSION}"
+    implementation project(':library')
+    compileOnly "com.android.support:recyclerview-v7:${ANDROID_SUPPORT_VERSION}"
+    compileOnly "com.android.support:support-fragment:${ANDROID_SUPPORT_VERSION}"
 }
 
 android {
     compileSdkVersion COMPILE_SDK_VERSION as int
-    buildToolsVersion BUILD_TOOLS_VERSION as String
 
     defaultConfig {
         minSdkVersion MIN_SDK_VERSION as int
         targetSdkVersion TARGET_SDK_VERSION as int
 
-        versionCode VERSION_CODE as int
         versionName VERSION_NAME as String
     }
 
@@ -28,4 +22,4 @@ android {
     }
 }
 
-apply from: "$rootProject.projectDir/scripts/upload.gradle"
+apply from: "${rootProject.projectDir}/scripts/upload.gradle"

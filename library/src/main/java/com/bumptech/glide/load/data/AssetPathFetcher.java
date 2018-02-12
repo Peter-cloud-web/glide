@@ -1,11 +1,10 @@
 package com.bumptech.glide.load.data;
 
 import android.content.res.AssetManager;
+import android.support.annotation.NonNull;
 import android.util.Log;
-
 import com.bumptech.glide.Priority;
 import com.bumptech.glide.load.DataSource;
-
 import java.io.IOException;
 
 /**
@@ -20,13 +19,15 @@ public abstract class AssetPathFetcher<T> implements DataFetcher<T> {
   private final AssetManager assetManager;
   private T data;
 
+  // Public API.
+  @SuppressWarnings("WeakerAccess")
   public AssetPathFetcher(AssetManager assetManager, String assetPath) {
     this.assetManager = assetManager;
     this.assetPath = assetPath;
   }
 
   @Override
-  public void loadData(Priority priority, DataCallback<? super T> callback) {
+  public void loadData(@NonNull Priority priority, @NonNull DataCallback<? super T> callback) {
     try {
       data = loadResource(assetManager, assetPath);
     } catch (IOException e) {
@@ -56,6 +57,7 @@ public abstract class AssetPathFetcher<T> implements DataFetcher<T> {
     // Do nothing.
   }
 
+  @NonNull
   @Override
   public DataSource getDataSource() {
     return DataSource.LOCAL;
@@ -63,7 +65,7 @@ public abstract class AssetPathFetcher<T> implements DataFetcher<T> {
 
   /**
    * Opens the given asset path with the given {@link android.content.res.AssetManager} and returns
-   * the conrete data type returned by the AssetManager.
+   * the concrete data type returned by the AssetManager.
    *
    * @param assetManager An AssetManager to use to open the given path.
    * @param path         A string path pointing to a resource in assets to open.
@@ -74,7 +76,6 @@ public abstract class AssetPathFetcher<T> implements DataFetcher<T> {
    * Closes the concrete data type if necessary.
    *
    * @param data The data to close.
-   * @throws IOException
    */
   protected abstract void close(T data) throws IOException;
 }

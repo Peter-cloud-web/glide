@@ -1,22 +1,26 @@
 package com.bumptech.glide.request;
 
-import android.content.res.Resources;
+import android.content.Context;
+import android.content.res.Resources.Theme;
 import android.graphics.drawable.Drawable;
-import android.support.v4.content.res.ResourcesCompat;
+import android.support.annotation.DrawableRes;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.support.v4.util.Pools;
 import android.util.Log;
-
 import com.bumptech.glide.GlideContext;
 import com.bumptech.glide.Priority;
 import com.bumptech.glide.load.DataSource;
 import com.bumptech.glide.load.engine.Engine;
 import com.bumptech.glide.load.engine.GlideException;
 import com.bumptech.glide.load.engine.Resource;
+import com.bumptech.glide.load.resource.drawable.DrawableDecoderCompat;
 import com.bumptech.glide.request.target.SizeReadyCallback;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 import com.bumptech.glide.request.transition.TransitionFactory;
 import com.bumptech.glide.util.LogTime;
+import com.bumptech.glide.util.Synthetic;
 import com.bumptech.glide.util.Util;
 import com.bumptech.glide.util.pool.FactoryPools;
 import com.bumptech.glide.util.pool.StateVerifier;
@@ -42,6 +46,10 @@ public final class SingleRequest<R> implements Request,
           return new SingleRequest<Object>();
         }
       });
+  private boolean isCallingCallbacks;
+
+  private static final boolean IS_VERBOSE_LOGGABLE =
+      Log.isLoggable(TAG, Log.VERBOSE);
 
   private enum Status {
     /**
@@ -78,14 +86,19 @@ public final class SingleRequest<R> implements Request,
     PAUSED,
   }
 
-  private final String tag = String.valueOf(hashCode());
+  @Nullable
+  private final String tag = IS_VERBOSE_LOGGABLE ? String.valueOf(super.hashCode()) : null;
   private final StateVerifier stateVerifier = StateVerifier.newInstance();
 
+  @Nullable
+  private RequestListener<R> targetListener;
   private RequestCoordinator requestCoordinator;
+  private Context context;
   private GlideContext glideContext;
+  @Nullable
   private Object model;
   private Class<R> transcodeClass;
-  private BaseRequestOptions<?> requestOptions;
+  private RequestOptions requestOptions;
   private int overrideWidth;
   private int overrideHeight;
   private Priority priority;
@@ -104,14 +117,16 @@ public final class SingleRequest<R> implements Request,
   private int height;
 
   public static <R> SingleRequest<R> obtain(
+      Context context,
       GlideContext glideContext,
       Object model,
       Class<R> transcodeClass,
-      BaseRequestOptions<?> requestOptions,
+      RequestOptions requestOptions,
       int overrideWidth,
       int overrideHeight,
       Priority priority,
       Target<R> target,
+      RequestListener<R> targetListener,
       RequestListener<R> requestListener,
       RequestCoordinator requestCoordinator,
       Engine engine,
@@ -122,6 +137,7 @@ public final class SingleRequest<R> implements Request,
       request = new SingleRequest<>();
     }
     request.init(
+        context,
         glideContext,
         model,
         transcodeClass,
@@ -130,6 +146,7 @@ public final class SingleRequest<R> implements Request,
         overrideHeight,
         priority,
         target,
+        targetListener,
         requestListener,
         requestCoordinator,
         engine,
@@ -137,23 +154,28 @@ public final class SingleRequest<R> implements Request,
     return request;
   }
 
-  private SingleRequest() {
+  @SuppressWarnings("WeakerAccess")
+  @Synthetic
+  SingleRequest() {
     // just create, instances are reused with recycle/init
   }
 
   private void init(
+      Context context,
       GlideContext glideContext,
       Object model,
       Class<R> transcodeClass,
-      BaseRequestOptions<?> requestOptions,
+      RequestOptions requestOptions,
       int overrideWidth,
       int overrideHeight,
       Priority priority,
       Target<R> target,
+      RequestListener<R> targetListener,
       RequestListener<R> requestListener,
       RequestCoordinator requestCoordinator,
       Engine engine,
       TransitionFactory<? super R> animationFactory) {
+    this.context = context;
     this.glideContext = glideContext;
     this.model = model;
     this.transcodeClass = transcodeClass;
@@ -162,6 +184,7 @@ public final class SingleRequest<R> implements Request,
     this.overrideHeight = overrideHeight;
     this.priority = priority;
     this.target = target;
+    this.targetListener = targetListener;
     this.requestListener = requestListener;
     this.requestCoordinator = requestCoordinator;
     this.engine = engine;
@@ -169,6 +192,7 @@ public final class SingleRequest<R> implements Request,
     status = Status.PENDING;
   }
 
+  @NonNull
   @Override
   public StateVerifier getVerifier() {
     return stateVerifier;
@@ -176,6 +200,8 @@ public final class SingleRequest<R> implements Request,
 
   @Override
   public void recycle() {
+    assertNotCallingCallbacks();
+    context = null;
     glideContext = null;
     model = null;
     transcodeClass = null;
@@ -184,6 +210,7 @@ public final class SingleRequest<R> implements Request,
     overrideHeight = -1;
     target = null;
     requestListener = null;
+    targetListener = null;
     requestCoordinator = null;
     animationFactory = null;
     loadStatus = null;
@@ -197,12 +224,38 @@ public final class SingleRequest<R> implements Request,
 
   @Override
   public void begin() {
+    assertNotCallingCallbacks();
     stateVerifier.throwIfRecycled();
     startTime = LogTime.getLogTime();
     if (model == null) {
-      onLoadFailed(new GlideException("Received null model"));
+      if (Util.isValidDimensions(overrideWidth, overrideHeight)) {
+        width = overrideWidth;
+        height = overrideHeight;
+      }
+      // Only log at more verbose log levels if the user has set a fallback drawable, because
+      // fallback Drawables indicate the user expects null models occasionally.
+      int logLevel = getFallbackDrawable() == null ? Log.WARN : Log.DEBUG;
+      onLoadFailed(new GlideException("Received null model"), logLevel);
       return;
     }
+
+    if (status == Status.RUNNING) {
+      throw new IllegalArgumentException("Cannot restart a running request");
+    }
+
+    // If we're restarted after we're complete (usually via something like a notifyDataSetChanged
+    // that starts an identical request into the same Target or View), we can simply use the
+    // resource and size we retrieved the last time around and skip obtaining a new size, starting a
+    // new load etc. This does mean that users who want to restart a load because they expect that
+    // the view size has changed will need to explicitly clear the View or Target before starting
+    // the new load.
+    if (status == Status.COMPLETE) {
+      onResourceReady(resource, DataSource.MEMORY_CACHE);
+      return;
+    }
+
+    // Restarts for requests that are neither complete nor running can be treated as new requests
+    // and can run again from the beginning.
 
     status = Status.WAITING_FOR_SIZE;
     if (Util.isValidDimensions(overrideWidth, overrideHeight)) {
@@ -215,7 +268,7 @@ public final class SingleRequest<R> implements Request,
         && canNotifyStatusChanged()) {
       target.onLoadStarted(getPlaceholderDrawable());
     }
-    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+    if (IS_VERBOSE_LOGGABLE) {
       logV("finished run method in " + LogTime.getElapsedMillis(startTime));
     }
   }
@@ -229,11 +282,23 @@ public final class SingleRequest<R> implements Request,
    * @see #clear()
    */
   void cancel() {
+    assertNotCallingCallbacks();
     stateVerifier.throwIfRecycled();
+    target.removeCallback(this);
     status = Status.CANCELLED;
     if (loadStatus != null) {
       loadStatus.cancel();
       loadStatus = null;
+    }
+  }
+
+  // Avoids difficult to understand errors like #2413.
+  private void assertNotCallingCallbacks() {
+    if (isCallingCallbacks) {
+      throw new IllegalStateException("You can't start or clear loads in RequestListener or"
+          + " Target callbacks. If you're trying to start a fallback request when a load fails, use"
+          + " RequestBuilder#error(RequestBuilder). Otherwise consider posting your into() or"
+          + " clear() calls to the main thread using a Handler instead.");
     }
   }
 
@@ -248,6 +313,8 @@ public final class SingleRequest<R> implements Request,
   @Override
   public void clear() {
     Util.assertMainThread();
+    assertNotCallingCallbacks();
+    stateVerifier.throwIfRecycled();
     if (status == Status.CLEARED) {
       return;
     }
@@ -256,7 +323,7 @@ public final class SingleRequest<R> implements Request,
     if (resource != null) {
       releaseResource(resource);
     }
-    if (canNotifyStatusChanged()) {
+    if (canNotifyCleared()) {
       target.onLoadCleared(getPlaceholderDrawable());
     }
     // Must be after cancel().
@@ -274,7 +341,7 @@ public final class SingleRequest<R> implements Request,
     status = Status.PAUSED;
   }
 
-  private void releaseResource(Resource resource) {
+  private void releaseResource(Resource<?> resource) {
     engine.release(resource);
     this.resource = null;
   }
@@ -334,9 +401,10 @@ public final class SingleRequest<R> implements Request,
     return fallbackDrawable;
   }
 
-  private Drawable loadDrawable(int resouceId) {
-    Resources resources = glideContext.getResources();
-    return ResourcesCompat.getDrawable(resources, resouceId, requestOptions.getTheme());
+  private Drawable loadDrawable(@DrawableRes int resourceId) {
+    Theme theme = requestOptions.getTheme() != null
+        ? requestOptions.getTheme() : context.getTheme();
+    return DrawableDecoderCompat.getDrawable(glideContext, resourceId, theme);
   }
 
   private void setErrorPlaceholder() {
@@ -344,7 +412,15 @@ public final class SingleRequest<R> implements Request,
       return;
     }
 
-    Drawable error = model == null ? getFallbackDrawable() : getErrorDrawable();
+    Drawable error = null;
+    if (model == null) {
+      error = getFallbackDrawable();
+    }
+    // Either the model isn't null, or there was no fallback drawable set.
+    if (error == null) {
+      error = getErrorDrawable();
+    }
+    // The model isn't null, no fallback drawable was set or no error drawable was set.
     if (error == null) {
       error = getPlaceholderDrawable();
     }
@@ -357,7 +433,7 @@ public final class SingleRequest<R> implements Request,
   @Override
   public void onSizeReady(int width, int height) {
     stateVerifier.throwIfRecycled();
-    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+    if (IS_VERBOSE_LOGGABLE) {
       logV("Got onSizeReady in " + LogTime.getElapsedMillis(startTime));
     }
     if (status != Status.WAITING_FOR_SIZE) {
@@ -366,10 +442,10 @@ public final class SingleRequest<R> implements Request,
     status = Status.RUNNING;
 
     float sizeMultiplier = requestOptions.getSizeMultiplier();
-    this.width = Math.round(sizeMultiplier * width);
-    this.height = Math.round(sizeMultiplier * height);
+    this.width = maybeApplySizeMultiplier(width, sizeMultiplier);
+    this.height = maybeApplySizeMultiplier(height, sizeMultiplier);
 
-    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+    if (IS_VERBOSE_LOGGABLE) {
       logV("finished setup for calling load in " + LogTime.getElapsedMillis(startTime));
     }
     loadStatus = engine.load(
@@ -384,16 +460,35 @@ public final class SingleRequest<R> implements Request,
         requestOptions.getDiskCacheStrategy(),
         requestOptions.getTransformations(),
         requestOptions.isTransformationRequired(),
+        requestOptions.isScaleOnlyOrNoTransform(),
         requestOptions.getOptions(),
         requestOptions.isMemoryCacheable(),
+        requestOptions.getUseUnlimitedSourceGeneratorsPool(),
+        requestOptions.getUseAnimationPool(),
+        requestOptions.getOnlyRetrieveFromCache(),
         this);
-    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+
+    // This is a hack that's only useful for testing right now where loads complete synchronously
+    // even though under any executor running on any thread but the main thread, the load would
+    // have completed asynchronously.
+    if (status != Status.RUNNING) {
+      loadStatus = null;
+    }
+    if (IS_VERBOSE_LOGGABLE) {
       logV("finished onSizeReady in " + LogTime.getElapsedMillis(startTime));
     }
   }
 
+  private static int maybeApplySizeMultiplier(int size, float sizeMultiplier) {
+    return size == Target.SIZE_ORIGINAL ? size : Math.round(sizeMultiplier * size);
+  }
+
   private boolean canSetResource() {
     return requestCoordinator == null || requestCoordinator.canSetImage(this);
+  }
+
+  private boolean canNotifyCleared() {
+    return requestCoordinator == null || requestCoordinator.canNotifyCleared(this);
   }
 
   private boolean canNotifyStatusChanged() {
@@ -407,6 +502,12 @@ public final class SingleRequest<R> implements Request,
   private void notifyLoadSuccess() {
     if (requestCoordinator != null) {
       requestCoordinator.onRequestSuccess(this);
+    }
+  }
+
+  private void notifyLoadFailed() {
+    if (requestCoordinator != null) {
+      requestCoordinator.onRequestFailed(this);
     }
   }
 
@@ -467,11 +568,18 @@ public final class SingleRequest<R> implements Request,
           + LogTime.getElapsedMillis(startTime) + " ms");
     }
 
-    if (requestListener == null
-        || !requestListener.onResourceReady(result, model, target, dataSource, isFirstResource)) {
-      Transition<? super R> animation =
-          animationFactory.build(dataSource, isFirstResource);
-      target.onResourceReady(result, animation);
+    isCallingCallbacks = true;
+    try {
+      if ((requestListener == null
+          || !requestListener.onResourceReady(result, model, target, dataSource, isFirstResource))
+          && (targetListener == null
+          || !targetListener.onResourceReady(result, model, target, dataSource, isFirstResource))) {
+        Transition<? super R> animation =
+            animationFactory.build(dataSource, isFirstResource);
+        target.onResourceReady(result, animation);
+      }
+    } finally {
+      isCallingCallbacks = false;
     }
 
     notifyLoadSuccess();
@@ -482,9 +590,13 @@ public final class SingleRequest<R> implements Request,
    */
   @Override
   public void onLoadFailed(GlideException e) {
+    onLoadFailed(e, Log.WARN);
+  }
+
+  private void onLoadFailed(GlideException e, int maxLogLevel) {
     stateVerifier.throwIfRecycled();
     int logLevel = glideContext.getLogLevel();
-    if (logLevel <= Log.WARN) {
+    if (logLevel <= maxLogLevel) {
       Log.w(GLIDE_TAG, "Load failed for " + model + " with size [" + width + "x" + height + "]", e);
       if (logLevel <= Log.INFO) {
         e.logRootCauses(GLIDE_TAG);
@@ -493,11 +605,40 @@ public final class SingleRequest<R> implements Request,
 
     loadStatus = null;
     status = Status.FAILED;
-    //TODO: what if this is a thumbnail request?
-    if (requestListener == null || !requestListener.onLoadFailed(e, model, target,
-        isFirstReadyResource())) {
-      setErrorPlaceholder();
+
+    isCallingCallbacks = true;
+    try {
+      //TODO: what if this is a thumbnail request?
+      if ((requestListener == null
+          || !requestListener.onLoadFailed(e, model, target, isFirstReadyResource()))
+          && (targetListener == null
+          || !targetListener.onLoadFailed(e, model, target, isFirstReadyResource()))) {
+        setErrorPlaceholder();
+      }
+    } finally {
+      isCallingCallbacks = false;
     }
+
+    notifyLoadFailed();
+  }
+
+  @Override
+  public boolean isEquivalentTo(Request o) {
+    if (o instanceof SingleRequest) {
+      SingleRequest<?> that = (SingleRequest<?>) o;
+      return overrideWidth == that.overrideWidth
+          && overrideHeight == that.overrideHeight
+          && Util.bothModelsNullEquivalentOrEquals(model, that.model)
+          && transcodeClass.equals(that.transcodeClass)
+          && requestOptions.equals(that.requestOptions)
+          && priority == that.priority
+          // We do not want to require that RequestListeners implement equals/hashcode, so we don't
+          // compare them using equals(). We can however, at least assert that the request listener
+          // is either present or not present in both requests.
+          && (requestListener != null
+          ? that.requestListener != null : that.requestListener == null);
+    }
+    return false;
   }
 
   private void logV(String message) {

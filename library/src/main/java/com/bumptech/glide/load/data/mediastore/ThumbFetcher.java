@@ -1,18 +1,19 @@
 package com.bumptech.glide.load.data.mediastore;
 
+import android.content.ContentResolver;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.MediaStore;
+import android.support.annotation.NonNull;
+import android.support.annotation.VisibleForTesting;
 import android.util.Log;
-
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.Priority;
 import com.bumptech.glide.load.DataSource;
 import com.bumptech.glide.load.data.DataFetcher;
 import com.bumptech.glide.load.data.ExifOrientationStream;
-import com.bumptech.glide.load.engine.bitmap_recycle.ByteArrayPool;
-
+import com.bumptech.glide.load.engine.bitmap_recycle.ArrayPool;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -21,35 +22,38 @@ import java.io.InputStream;
  * A {@link DataFetcher} implementation for {@link InputStream}s that loads data from thumbnail
  * files obtained from the {@link MediaStore}.
  */
+@SuppressWarnings("PMD.FieldDeclarationsShouldBeAtStartOfClass")
 public class ThumbFetcher implements DataFetcher<InputStream> {
   private static final String TAG = "MediaStoreThumbFetcher";
-  private final Context context;
   private final Uri mediaStoreImageUri;
   private final ThumbnailStreamOpener opener;
   private InputStream inputStream;
 
   public static ThumbFetcher buildImageFetcher(Context context, Uri uri) {
-    return build(context, uri, new ImageThumbnailQuery());
+    return build(context, uri, new ImageThumbnailQuery(context.getContentResolver()));
   }
 
   public static ThumbFetcher buildVideoFetcher(Context context, Uri uri) {
-    return build(context, uri, new VideoThumbnailQuery());
+    return build(context, uri, new VideoThumbnailQuery(context.getContentResolver()));
   }
 
   private static ThumbFetcher build(Context context, Uri uri, ThumbnailQuery query) {
-    ByteArrayPool byteArrayPool = Glide.get(context).getByteArrayPool();
-    return new ThumbFetcher(context, uri, new ThumbnailStreamOpener(query, byteArrayPool));
+    ArrayPool byteArrayPool = Glide.get(context).getArrayPool();
+    ThumbnailStreamOpener opener = new ThumbnailStreamOpener(
+        Glide.get(context).getRegistry().getImageHeaderParsers(), query, byteArrayPool,
+        context.getContentResolver());
+    return new ThumbFetcher(uri, opener);
   }
 
-  // Visible for testing.
-  ThumbFetcher(Context context, Uri mediaStoreImageUri, ThumbnailStreamOpener opener) {
-    this.context = context;
+  @VisibleForTesting
+  ThumbFetcher(Uri mediaStoreImageUri, ThumbnailStreamOpener opener) {
     this.mediaStoreImageUri = mediaStoreImageUri;
     this.opener = opener;
   }
 
   @Override
-  public void loadData(Priority priority, DataCallback<? super InputStream> callback) {
+  public void loadData(@NonNull Priority priority,
+      @NonNull DataCallback<? super InputStream> callback) {
     try {
       inputStream = openThumbInputStream();
     } catch (FileNotFoundException e) {
@@ -64,11 +68,11 @@ public class ThumbFetcher implements DataFetcher<InputStream> {
   }
 
   private InputStream openThumbInputStream() throws FileNotFoundException {
-    InputStream result = opener.open(context, mediaStoreImageUri);
+    InputStream result = opener.open(mediaStoreImageUri);
 
     int orientation = -1;
     if (result != null) {
-      orientation = opener.getOrientation(context, mediaStoreImageUri);
+      orientation = opener.getOrientation(mediaStoreImageUri);
     }
 
     if (orientation != -1) {
@@ -93,53 +97,69 @@ public class ThumbFetcher implements DataFetcher<InputStream> {
     // Do nothing.
   }
 
+  @NonNull
   @Override
   public Class<InputStream> getDataClass() {
     return InputStream.class;
   }
 
+  @NonNull
   @Override
   public DataSource getDataSource() {
     return DataSource.LOCAL;
   }
 
   static class VideoThumbnailQuery implements ThumbnailQuery {
+
+    private final ContentResolver contentResolver;
+
+    VideoThumbnailQuery(ContentResolver contentResolver) {
+      this.contentResolver = contentResolver;
+    }
+
     private static final String[] PATH_PROJECTION = {
-      MediaStore.Video.Thumbnails.DATA
+        MediaStore.Video.Thumbnails.DATA
     };
     private static final String PATH_SELECTION =
         MediaStore.Video.Thumbnails.KIND + " = " + MediaStore.Video.Thumbnails.MINI_KIND
-        + " AND " + MediaStore.Video.Thumbnails.VIDEO_ID + " = ?";
+            + " AND " + MediaStore.Video.Thumbnails.VIDEO_ID + " = ?";
 
     @Override
-    public Cursor query(Context context, Uri uri) {
+    public Cursor query(Uri uri) {
       String videoId = uri.getLastPathSegment();
-      return context.getContentResolver().query(
+      return contentResolver.query(
           MediaStore.Video.Thumbnails.EXTERNAL_CONTENT_URI,
           PATH_PROJECTION,
           PATH_SELECTION,
-          new String[] { videoId },
+          new String[] {videoId},
           null /*sortOrder*/);
     }
   }
 
 
   static class ImageThumbnailQuery implements ThumbnailQuery {
+
+    private final ContentResolver contentResolver;
+
+    ImageThumbnailQuery(ContentResolver contentResolver) {
+      this.contentResolver = contentResolver;
+    }
+
     private static final String[] PATH_PROJECTION = {
-      MediaStore.Images.Thumbnails.DATA,
+        MediaStore.Images.Thumbnails.DATA,
     };
     private static final String PATH_SELECTION =
         MediaStore.Images.Thumbnails.KIND + " = " + MediaStore.Images.Thumbnails.MINI_KIND
-        + " AND " + MediaStore.Images.Thumbnails.IMAGE_ID + " = ?";
+            + " AND " + MediaStore.Images.Thumbnails.IMAGE_ID + " = ?";
 
     @Override
-    public Cursor query(Context context, Uri uri) {
+    public Cursor query(Uri uri) {
       String imageId = uri.getLastPathSegment();
-      return context.getContentResolver().query(
+      return contentResolver.query(
           MediaStore.Images.Thumbnails.EXTERNAL_CONTENT_URI,
           PATH_PROJECTION,
           PATH_SELECTION,
-          new String[] { imageId },
+          new String[] {imageId},
           null /*sortOrder*/);
     }
   }

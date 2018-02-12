@@ -1,9 +1,5 @@
 package com.bumptech.glide.samples.giphy;
 
-import static com.bumptech.glide.request.RequestOptions.decodeTypeOf;
-
-import com.google.gson.Gson;
-
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -14,14 +10,13 @@ import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.ImageView;
-
-import com.bumptech.glide.Glide;
 import com.bumptech.glide.RequestBuilder;
 import com.bumptech.glide.load.DataSource;
 import com.bumptech.glide.load.engine.GlideException;
 import com.bumptech.glide.load.resource.gif.GifDrawable;
 import com.bumptech.glide.request.RequestListener;
 import com.bumptech.glide.request.target.Target;
+import com.google.gson.Gson;
 
 /**
  * An {@link android.app.Activity} for displaying full size original GIFs.
@@ -63,11 +58,11 @@ public class FullscreenActivity extends Activity {
       }
     });
 
-    RequestBuilder<Drawable> thumbnailRequest = Glide.with(this)
+    RequestBuilder<Drawable> thumbnailRequest = GlideApp.with(this)
         .load(result)
-        .apply(decodeTypeOf(Bitmap.class));
+        .decode(Bitmap.class);
 
-    Glide.with(this)
+    GlideApp.with(this)
         .load(result.images.original.url)
         .thumbnail(thumbnailRequest)
         .listener(new RequestListener<Drawable>() {

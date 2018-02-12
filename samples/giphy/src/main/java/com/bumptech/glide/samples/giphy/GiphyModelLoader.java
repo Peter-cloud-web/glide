@@ -1,15 +1,14 @@
 package com.bumptech.glide.samples.giphy;
 
-import android.content.Context;
+import android.support.annotation.NonNull;
 import android.text.TextUtils;
-
 import com.bumptech.glide.load.Options;
 import com.bumptech.glide.load.model.GlideUrl;
 import com.bumptech.glide.load.model.ModelLoader;
 import com.bumptech.glide.load.model.ModelLoaderFactory;
 import com.bumptech.glide.load.model.MultiModelLoaderFactory;
 import com.bumptech.glide.load.model.stream.BaseGlideUrlLoader;
-
+import com.bumptech.glide.samples.giphy.Api.GifResult;
 import java.io.InputStream;
 
 /**
@@ -17,32 +16,14 @@ import java.io.InputStream;
  * Giphy's api into an {@link java.io.InputStream} that can be decoded into an
  * {@link android.graphics.drawable.Drawable}.
  */
-public class GiphyModelLoader extends BaseGlideUrlLoader<Api.GifResult> {
+public final class GiphyModelLoader extends BaseGlideUrlLoader<Api.GifResult> {
 
   @Override
-  public boolean handles(Api.GifResult model) {
+  public boolean handles(@NonNull Api.GifResult model) {
     return true;
   }
 
-  /**
-   * The default factory for {@link com.bumptech.glide.samples.giphy.GiphyModelLoader}s.
-   */
-  public static class Factory implements ModelLoaderFactory<Api.GifResult, InputStream> {
-
-
-    @Override
-    public ModelLoader<Api.GifResult, InputStream> build(Context context,
-        MultiModelLoaderFactory multiFactory) {
-      return new GiphyModelLoader(multiFactory.build(GlideUrl.class, InputStream.class));
-    }
-
-    @Override
-    public void teardown() {
-      // Do nothing.
-    }
-  }
-
-  public GiphyModelLoader(ModelLoader<GlideUrl, InputStream> urlLoader) {
+  private GiphyModelLoader(ModelLoader<GlideUrl, InputStream> urlLoader) {
     super(urlLoader);
   }
 
@@ -65,5 +46,21 @@ public class GiphyModelLoader extends BaseGlideUrlLoader<Api.GifResult> {
 
   private static int getDifference(Api.GifImage gifImage, int width, int height) {
     return Math.abs(width - gifImage.width) + Math.abs(height - gifImage.height);
+  }
+
+  /**
+   * The default factory for {@link com.bumptech.glide.samples.giphy.GiphyModelLoader}s.
+   */
+  public static final class Factory implements ModelLoaderFactory<GifResult, InputStream> {
+    @NonNull
+    @Override
+    public ModelLoader<Api.GifResult, InputStream> build(MultiModelLoaderFactory multiFactory) {
+      return new GiphyModelLoader(multiFactory.build(GlideUrl.class, InputStream.class));
+    }
+
+    @Override
+    public void teardown() {
+      // Do nothing.
+    }
   }
 }

@@ -2,9 +2,9 @@ package com.bumptech.glide.request.target;
 
 import android.graphics.drawable.Animatable;
 import android.graphics.drawable.Drawable;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.widget.ImageView;
-
 import com.bumptech.glide.request.transition.Transition;
 
 /**
@@ -14,6 +14,8 @@ import com.bumptech.glide.request.transition.Transition;
  * @param <Z> The type of resource that this target will display in the wrapped {@link
  *            android.widget.ImageView}.
  */
+// Public API.
+@SuppressWarnings("WeakerAccess")
 public abstract class ImageViewTarget<Z> extends ViewTarget<ImageView, Z>
     implements Transition.ViewAdapter {
 
@@ -22,6 +24,15 @@ public abstract class ImageViewTarget<Z> extends ViewTarget<ImageView, Z>
 
   public ImageViewTarget(ImageView view) {
     super(view);
+  }
+
+  /**
+   * @deprecated Use {@link #waitForLayout()} instead.
+   */
+  @SuppressWarnings({"deprecation"})
+  @Deprecated
+  public ImageViewTarget(ImageView view, boolean waitForLayout) {
+    super(view, waitForLayout);
   }
 
   /**
@@ -54,7 +65,7 @@ public abstract class ImageViewTarget<Z> extends ViewTarget<ImageView, Z>
   @Override
   public void onLoadStarted(@Nullable Drawable placeholder) {
     super.onLoadStarted(placeholder);
-    setResource(null);
+    setResourceInternal(null);
     setDrawable(placeholder);
   }
 
@@ -67,7 +78,7 @@ public abstract class ImageViewTarget<Z> extends ViewTarget<ImageView, Z>
   @Override
   public void onLoadFailed(@Nullable Drawable errorDrawable) {
     super.onLoadFailed(errorDrawable);
-    setResource(null);
+    setResourceInternal(null);
     setDrawable(errorDrawable);
   }
 
@@ -80,19 +91,19 @@ public abstract class ImageViewTarget<Z> extends ViewTarget<ImageView, Z>
   @Override
   public void onLoadCleared(@Nullable Drawable placeholder) {
     super.onLoadCleared(placeholder);
-    setResource(null);
+    if (animatable != null) {
+      animatable.stop();
+    }
+    setResourceInternal(null);
     setDrawable(placeholder);
   }
 
   @Override
-  public void onResourceReady(Z resource, @Nullable Transition<? super Z> transition) {
+  public void onResourceReady(@NonNull Z resource, @Nullable Transition<? super Z> transition) {
     if (transition == null || !transition.transition(resource, this)) {
-      setResource(resource);
-    }
-
-    if (resource instanceof Animatable) {
-      animatable = (Animatable) resource;
-      animatable.start();
+      setResourceInternal(resource);
+    } else {
+      maybeUpdateAnimatable(resource);
     }
   }
 
@@ -107,6 +118,22 @@ public abstract class ImageViewTarget<Z> extends ViewTarget<ImageView, Z>
   public void onStop() {
     if (animatable != null) {
       animatable.stop();
+    }
+  }
+
+  private void setResourceInternal(@Nullable Z resource) {
+    // Order matters here. Set the resource first to make sure that the Drawable has a valid and
+    // non-null Callback before starting it.
+    setResource(resource);
+    maybeUpdateAnimatable(resource);
+  }
+
+  private void maybeUpdateAnimatable(@Nullable Z resource) {
+    if (resource instanceof Animatable) {
+      animatable = (Animatable) resource;
+      animatable.start();
+    } else {
+      animatable = null;
     }
   }
 

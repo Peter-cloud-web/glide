@@ -1,5 +1,8 @@
 package com.bumptech.glide.load.resource.transcode;
 
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
+import com.bumptech.glide.load.Options;
 import com.bumptech.glide.load.engine.Resource;
 
 /**
@@ -11,9 +14,10 @@ import com.bumptech.glide.load.engine.Resource;
 public interface ResourceTranscoder<Z, R> {
 
   /**
-   * Transcodes the given resource to the new resource type and returns the wew resource.
+   * Transcodes the given resource to the new resource type and returns the new resource.
    *
    * @param toTranscode The resource to transcode.
    */
-  Resource<R> transcode(Resource<Z> toTranscode);
+  @Nullable
+  Resource<R> transcode(@NonNull Resource<Z> toTranscode, @NonNull Options options);
 }

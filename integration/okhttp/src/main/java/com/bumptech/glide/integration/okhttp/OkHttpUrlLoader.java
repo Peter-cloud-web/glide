@@ -1,44 +1,50 @@
 package com.bumptech.glide.integration.okhttp;
 
-import android.content.Context;
-
+import android.support.annotation.NonNull;
 import com.bumptech.glide.load.Options;
 import com.bumptech.glide.load.model.GlideUrl;
 import com.bumptech.glide.load.model.ModelLoader;
 import com.bumptech.glide.load.model.ModelLoaderFactory;
 import com.bumptech.glide.load.model.MultiModelLoaderFactory;
 import com.squareup.okhttp.OkHttpClient;
-
 import java.io.InputStream;
 
 /**
  * A simple model loader for fetching media over http/https using OkHttp.
+ *
+ * @deprecated replaced with com.bumptech.glide.integration.okhttp3.OkHttpUrlLoader.
  */
+@Deprecated
 public class OkHttpUrlLoader implements ModelLoader<GlideUrl, InputStream> {
 
   private final OkHttpClient client;
 
+  // Public API.
+  @SuppressWarnings("WeakerAccess")
   public OkHttpUrlLoader(OkHttpClient client) {
     this.client = client;
   }
 
   @Override
-  public boolean handles(GlideUrl url) {
+  public boolean handles(@NonNull GlideUrl url) {
     return true;
   }
 
+  @SuppressWarnings("deprecation")
   @Override
-  public LoadData<InputStream> buildLoadData(GlideUrl model, int width, int height,
-      Options options) {
+  public LoadData<InputStream> buildLoadData(@NonNull GlideUrl model, int width, int height,
+      @NonNull Options options) {
     return new LoadData<>(model, new OkHttpStreamFetcher(client, model));
   }
 
   /**
    * The default factory for {@link OkHttpUrlLoader}s.
    */
+  // Public API.
+  @SuppressWarnings({"WeakerAccess", "deprecation"})
   public static class Factory implements ModelLoaderFactory<GlideUrl, InputStream> {
     private static volatile OkHttpClient internalClient;
-    private OkHttpClient client;
+    private final OkHttpClient client;
 
     private static OkHttpClient getInternalClient() {
       if (internalClient == null) {
@@ -65,9 +71,10 @@ public class OkHttpUrlLoader implements ModelLoader<GlideUrl, InputStream> {
       this.client = client;
     }
 
+    @NonNull
+    @SuppressWarnings("deprecation")
     @Override
-    public ModelLoader<GlideUrl, InputStream> build(Context context,
-        MultiModelLoaderFactory multiFactory) {
+    public ModelLoader<GlideUrl, InputStream> build(MultiModelLoaderFactory multiFactory) {
       return new OkHttpUrlLoader(client);
     }
 

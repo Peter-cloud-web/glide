@@ -1,13 +1,12 @@
 package com.bumptech.glide.load.model;
 
-import android.content.Context;
+import android.content.res.AssetFileDescriptor;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.text.TextUtils;
-
 import com.bumptech.glide.load.Options;
-
 import java.io.File;
 import java.io.InputStream;
 
@@ -20,19 +19,21 @@ import java.io.InputStream;
 public class StringLoader<Data> implements ModelLoader<String, Data> {
   private final ModelLoader<Uri, Data> uriLoader;
 
+  // Public API.
+  @SuppressWarnings("WeakerAccess")
   public StringLoader(ModelLoader<Uri, Data> uriLoader) {
     this.uriLoader = uriLoader;
   }
 
   @Override
-  public LoadData<Data> buildLoadData(String model, int width, int height,
-      Options options) {
+  public LoadData<Data> buildLoadData(@NonNull String model, int width, int height,
+      @NonNull Options options) {
     Uri uri = parseUri(model);
     return uri == null ? null : uriLoader.buildLoadData(uri, width, height, options);
   }
 
   @Override
-  public boolean handles(String model) {
+  public boolean handles(@NonNull String model) {
     return true;
   }
 
@@ -41,7 +42,8 @@ public class StringLoader<Data> implements ModelLoader<String, Data> {
     Uri uri;
     if (TextUtils.isEmpty(model)) {
       return null;
-    } else if (model.startsWith("/")) {
+    // See https://pmd.github.io/pmd-6.0.0/pmd_rules_java_performance.html#simplifystartswith
+    } else if (model.charAt(0) == '/') {
       uri = toFileUri(model);
     } else {
       uri = Uri.parse(model);
@@ -62,9 +64,9 @@ public class StringLoader<Data> implements ModelLoader<String, Data> {
    */
   public static class StreamFactory implements ModelLoaderFactory<String, InputStream> {
 
+    @NonNull
     @Override
-    public ModelLoader<String, InputStream> build(Context context,
-        MultiModelLoaderFactory multiFactory) {
+    public ModelLoader<String, InputStream> build(MultiModelLoaderFactory multiFactory) {
       return new StringLoader<>(multiFactory.build(Uri.class, InputStream.class));
     }
 
@@ -80,10 +82,27 @@ public class StringLoader<Data> implements ModelLoader<String, Data> {
   public static class FileDescriptorFactory
       implements ModelLoaderFactory<String, ParcelFileDescriptor> {
 
+    @NonNull
     @Override
-    public ModelLoader<String, ParcelFileDescriptor> build(Context context,
-        MultiModelLoaderFactory multiFactory) {
+    public ModelLoader<String, ParcelFileDescriptor> build(MultiModelLoaderFactory multiFactory) {
       return new StringLoader<>(multiFactory.build(Uri.class, ParcelFileDescriptor.class));
+    }
+
+    @Override
+    public void teardown() {
+      // Do nothing.
+    }
+  }
+
+  /**
+   * Loads {@link AssetFileDescriptor}s from Strings.
+   */
+  public static final class AssetFileDescriptorFactory
+      implements ModelLoaderFactory<String, AssetFileDescriptor> {
+
+    @Override
+    public ModelLoader<String, AssetFileDescriptor> build(MultiModelLoaderFactory multiFactory) {
+      return new StringLoader<>(multiFactory.build(Uri.class, AssetFileDescriptor.class));
     }
 
     @Override

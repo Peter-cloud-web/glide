@@ -1,7 +1,6 @@
 package com.bumptech.glide.samples.flickr;
 
-import android.content.Context;
-
+import android.support.annotation.NonNull;
 import com.bumptech.glide.load.Options;
 import com.bumptech.glide.load.model.GlideUrl;
 import com.bumptech.glide.load.model.ModelCache;
@@ -11,7 +10,6 @@ import com.bumptech.glide.load.model.MultiModelLoaderFactory;
 import com.bumptech.glide.load.model.stream.BaseGlideUrlLoader;
 import com.bumptech.glide.samples.flickr.api.Api;
 import com.bumptech.glide.samples.flickr.api.Photo;
-
 import java.io.InputStream;
 import java.util.List;
 
@@ -20,19 +18,19 @@ import java.util.List;
  * ExecutorService backing the Engine to download the image and resize it in memory before saving
  * the resized version directly to the disk cache.
  */
-public class FlickrModelLoader extends BaseGlideUrlLoader<Photo> {
+public final class FlickrModelLoader extends BaseGlideUrlLoader<Photo> {
 
   /**
    * The default factory for {@link com.bumptech.glide.samples.flickr.FlickrModelLoader}s.
    */
   public static class Factory implements ModelLoaderFactory<Photo, InputStream> {
-    private final ModelCache<Photo, GlideUrl> modelCache = new ModelCache<Photo, GlideUrl>(500);
+    private final ModelCache<Photo, GlideUrl> modelCache = new ModelCache<>(500);
 
+    @NonNull
     @Override
-    public ModelLoader<Photo, InputStream> build(Context context,
-        MultiModelLoaderFactory multiFactory) {
-      return new FlickrModelLoader(multiFactory.build(GlideUrl.class, InputStream.class),
-          modelCache);
+    public ModelLoader<Photo, InputStream> build(MultiModelLoaderFactory multiFactory) {
+      return new FlickrModelLoader(
+          multiFactory.build(GlideUrl.class, InputStream.class), modelCache);
     }
 
     @Override
@@ -40,13 +38,13 @@ public class FlickrModelLoader extends BaseGlideUrlLoader<Photo> {
     }
   }
 
-  public FlickrModelLoader(ModelLoader<GlideUrl, InputStream> urlLoader,
-      ModelCache<Photo, GlideUrl> modelCache) {
+  private FlickrModelLoader(
+      ModelLoader<GlideUrl, InputStream> urlLoader, ModelCache<Photo, GlideUrl> modelCache) {
     super(urlLoader, modelCache);
   }
 
   @Override
-  public boolean handles(Photo model) {
+  public boolean handles(@NonNull Photo model) {
     return true;
   }
 

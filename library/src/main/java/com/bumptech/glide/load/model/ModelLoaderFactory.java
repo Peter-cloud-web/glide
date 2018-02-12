@@ -1,6 +1,7 @@
 package com.bumptech.glide.load.model;
 
 import android.content.Context;
+import android.support.annotation.NonNull;
 
 /**
  * An interface for creating a {@link ModelLoader} for a given model type. Will be retained
@@ -18,13 +19,12 @@ public interface ModelLoaderFactory<T, Y> {
   /**
    * Build a concrete ModelLoader for this model type.
    *
-   * @param context      A context that cannot be retained by the factory but can be retained by the
-   *                     {@link ModelLoader}
    * @param multiFactory A map of classes to factories that can be used to construct additional
    *                     {@link ModelLoader}s that this factory's {@link ModelLoader} may depend on
    * @return A new {@link ModelLoader}
    */
-  ModelLoader<T, Y> build(Context context, MultiModelLoaderFactory multiFactory);
+  @NonNull
+  ModelLoader<T, Y> build(@NonNull MultiModelLoaderFactory multiFactory);
 
   /**
    * A lifecycle method that will be called when this factory is about to replaced.
